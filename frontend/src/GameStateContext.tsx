@@ -1,0 +1,147 @@
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { io, Socket } from 'socket.io-client'
+import type { DiceRoll, GameState, Resource, TileId, VertexId } from './gameTypes'
+import { useAuth } from './AuthContext'
+
+export type LastDiceEvent = {
+  playerId: string
+  roll: DiceRoll | null
+  at: number
+}
+
+interface GameContextValue {
+  socket: Socket | null
+  state: GameState | null
+  lastError: string | null
+  lastDiceEvent: LastDiceEvent | null
+  startGame: () => void
+  rollDice: () => void
+  resolveWormhole: (params: { newBlackHoleTileId: TileId }) => void
+  buildStation: (vertexId: string) => void
+  upgradeStarbase: (vertexId: string) => void
+  buildHyperlane: (edgeId: string) => void
+  buildWarpLane: (params: { fromVertexId: VertexId; toVertexId: VertexId }) => void
+  endTurn: () => void
+  tradeBlackMarket: (params: { give: Resource; receive: Resource }) => void
+  sendChatMessage: (text: string) => void
+}
+
+const GameStateContext = createContext<GameContextValue | undefined>(undefined)
+
+interface Props {
+  gameId: string
+  playerId: string
+  playerName: string
+  avatarUrl: string
+  children: React.ReactNode
+}
+
+export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, children }: Props) {
+  const { backendUrl, token } = useAuth()
+  const [socket, setSocket] = useState<Socket | null>(null)
+  const [state, setState] = useState<GameState | null>(null)
+  const [lastError, setLastError] = useState<string | null>(null)
+  const [lastDiceEvent, setLastDiceEvent] = useState<LastDiceEvent | null>(null)
+  const stateRef = useRef<GameState | null>(null)
+
+  useEffect(() => {
+    const s = io(backendUrl, {
+      transports: ['websocket'],
+    })
+
+    s.on('connect', () => {
+      if (!token) return
+      s.emit('join_game', { gameId, token, avatarUrl })
+    })
+
+    s.on('game_state', (payload: { state: GameState }) => {
+      setState(payload.state)
+      stateRef.current = payload.state
+    })
+
+    s.on('dice_rolled', (payload: { playerId: string; roll: DiceRoll | null }) => {
+      setLastDiceEvent({ playerId: payload.playerId, roll: payload.roll, at: Date.now() })
+    })
+
+    s.on('error_message', (payload: { message: string }) => {
+      setLastError(payload.message)
+    })
+
+    s.on('game_ended', (payload: { reason: 'inactive_turns' | 'inactive_time' | 'empty' }) => {
+      const msg =
+        payload.reason === 'empty'
+          ? 'Spiel beendet: Alle Spieler haben das Spiel verlassen.'
+          : payload.reason === 'inactive_turns'
+            ? 'Spiel beendet: Zu lange keine Interaktion.'
+            : 'Spiel beendet: Inaktiv.'
+      setLastError(msg)
+      window.location.href = '/'
+    })
+
+    setSocket(s)
+
+    return () => {
+      s.disconnect()
+    }
+  }, [backendUrl, gameId, playerId, playerName, avatarUrl, token])
+
+  const value: GameContextValue = useMemo(
+    () => ({
+      socket,
+      state,
+      lastError,
+      lastDiceEvent,
+      startGame: () => {
+        if (!socket) return
+        socket.emit('start_game', { gameId })
+      },
+      rollDice: () => {
+        if (!socket) return
+        socket.emit('roll_dice', { gameId })
+      },
+      resolveWormhole: (params: { newBlackHoleTileId: TileId }) => {
+        if (!socket) return
+        socket.emit('resolve_wormhole', { gameId, ...params })
+      },
+      buildStation: (vertexId: string) => {
+        if (!socket) return
+        socket.emit('build_station', { gameId, vertexId })
+      },
+      upgradeStarbase: (vertexId: string) => {
+        if (!socket) return
+        socket.emit('upgrade_starbase', { gameId, vertexId })
+      },
+      buildHyperlane: (edgeId: string) => {
+        if (!socket) return
+        socket.emit('build_hyperlane', { gameId, edgeId })
+      },
+      buildWarpLane: (params: { fromVertexId: VertexId; toVertexId: VertexId }) => {
+        if (!socket) return
+        socket.emit('build_warp_lane', { gameId, ...params })
+      },
+      endTurn: () => {
+        if (!socket) return
+        socket.emit('end_turn', { gameId })
+      },
+      tradeBlackMarket: (params: { give: Resource; receive: Resource }) => {
+        if (!socket) return
+        socket.emit('black_market_trade', { gameId, ...params })
+      },
+      sendChatMessage: (text: string) => {
+        if (!socket) return
+        socket.emit('send_chat_message', { gameId, text })
+      },
+    }),
+    [socket, state, lastError, lastDiceEvent, gameId],
+  )
+
+  return <GameStateContext.Provider value={value}>{children}</GameStateContext.Provider>
+}
+
+export function useGameState() {
+  const ctx = useContext(GameStateContext)
+  if (!ctx) {
+    throw new Error('useGameState must be used inside GameStateProvider')
+  }
+  return ctx
+}

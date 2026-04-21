@@ -1,0 +1,23 @@
+0000000000000000000000000000000000000000 1762695c5662a260c7c22a3405c7d379630ca5fb hlux <hettrackz@gmx.net> 1773301445 +0100	commit (initial): Initial commit for production
+1762695c5662a260c7c22a3405c7d379630ca5fb 1762695c5662a260c7c22a3405c7d379630ca5fb hlux <hettrackz@gmx.net> 1773301454 +0100	Branch: renamed refs/heads/main to refs/heads/main
+1762695c5662a260c7c22a3405c7d379630ca5fb 2c3825318c2ea0e9d9d0665b4c87b2e059272f44 hlux <hettrackz@gmx.net> 1773302758 +0100	commit: feat: Add copy game ID button and improve lobby UI
+2c3825318c2ea0e9d9d0665b4c87b2e059272f44 6318c5201e27aaddc60753b2844adb6b3addb3d6 hlux <hettrackz@gmx.net> 1773303751 +0100	commit: fix: improve build script to install sub-dependencies
+6318c5201e27aaddc60753b2844adb6b3addb3d6 4ed68eb2b51f98dba34da53bdd95541028e2d0e0 hlux <hettrackz@gmx.net> 1773303895 +0100	commit: fix: include devDependencies for build on Railway
+4ed68eb2b51f98dba34da53bdd95541028e2d0e0 90820b968520027fbc4480675f028f84e7c03eec hlux <hettrackz@gmx.net> 1773306281 +0100	commit: fix: bind to 0.0.0.0 and simplify start script for railway
+90820b968520027fbc4480675f028f84e7c03eec 27e5ad234d1a0a90aa2d41a51b4c43d3354b86fd hlux <hettrackz@gmx.net> 1773306985 +0100	commit: debug: add port logging and improve path resolution
+27e5ad234d1a0a90aa2d41a51b4c43d3354b86fd 3f2d4e362e606d087590c9f1fb27f2a0dc22f684 hlux <hettrackz@gmx.net> 1773308495 +0100	commit: fix: use production origin for lobby api calls
+3f2d4e362e606d087590c9f1fb27f2a0dc22f684 8c041a4d420b909d591839faead5d57401449a25 hlux <hettrackz@gmx.net> 1773310057 +0100	commit: fix: allow joining game without selecting avatar
+8c041a4d420b909d591839faead5d57401449a25 3742c7949649aacc7b79c4158acf2367e0c2b0ad hlux <hettrackz@gmx.net> 1773338528 +0100	commit: feat: inactivity endgame, profanity filter, UI layout updates
+3742c7949649aacc7b79c4158acf2367e0c2b0ad 6c5e2d6a3b26f59fda4490f75967389c1273eeba hlux <hettrackz@gmx.net> 1773343035 +0100	commit: feat: Add copy game ID button and improve lobby UI
+6c5e2d6a3b26f59fda4490f75967389c1273eeba 5b174263b09ca26fe7d899b228805edf9758668f hlux <hettrackz@gmx.net> 1773346900 +0100	commit: feat(ui): improve layout, sticky sidebars, animated logo
+5b174263b09ca26fe7d899b228805edf9758668f 7d56b0666e71955d22938f6fb2ab8cf2539d0b99 hlux <hettrackz@gmx.net> 1773393186 +0100	commit: feat(ui): animate moves, highlight last move, capture toast
+7d56b0666e71955d22938f6fb2ab8cf2539d0b99 5da4086df7f43cc7460163328f809ba7276e5d27 hlux <hettrackz@gmx.net> 1773396201 +0100	commit: chore: expose deploy info on /health
+5da4086df7f43cc7460163328f809ba7276e5d27 a757f5147375bfcfdc18d1817763b1120e867b5e hlux <hettrackz@gmx.net> 1774643298 +0100	commit: fix(game): centered layout shell
+a757f5147375bfcfdc18d1817763b1120e867b5e 9bc47a2ad288a4c1446b87217749a34345665a44 hlux <hettrackz@gmx.net> 1774643409 +0100	commit: feat(ui): show dice overlay
+9bc47a2ad288a4c1446b87217749a34345665a44 f7024ff4536262c659f787499096a52d564ddc1e hlux <hettrackz@gmx.net> 1774726301 +0100	commit: feat(ui): material icons, winner screen, board tuning
+f7024ff4536262c659f787499096a52d564ddc1e 5a533cee25fcf768fa6c1a22bdd9ab46bfc2d8b9 hlux <hettrackz@gmx.net> 1774728597 +0100	commit: fix(turnstile): avoid widget rerender loop
+5a533cee25fcf768fa6c1a22bdd9ab46bfc2d8b9 352f88f17b295b798955ee8a5bb65ea049587dc2 hlux <hettrackz@gmx.net> 1774729801 +0100	commit: fix(auth): improve turnstile errors and reset
+352f88f17b295b798955ee8a5bb65ea049587dc2 ff1794ee65ec416b1d1b0a3282655ea3d82d19c2 hlux <hettrackz@gmx.net> 1774777572 +0200	commit: fix(auth): reduce turnstile duplicate token failures
+ff1794ee65ec416b1d1b0a3282655ea3d82d19c2 ee0e208b901ead4dc2c50c016926337f01dc11c0 hlux <hettrackz@gmx.net> 1774778096 +0200	commit: fix(auth): better register feedback and smtp timeouts
+ee0e208b901ead4dc2c50c016926337f01dc11c0 ffd00073fcc50e887a2208d1af1ea1ac7a3ac448 hlux <hettrackz@gmx.net> 1774783461 +0200	commit: feat(email): add Resend transport and graceful shutdown
+ffd00073fcc50e887a2208d1af1ea1ac7a3ac448 6c8ecc745b41a7c8037fcfdf3713ae7ed71b5ecf hlux <hettrackz@gmx.net> 1774784874 +0200	commit: fix(auth): make email verification link idempotent

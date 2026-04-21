@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Star Cluster – Regel-Matrix (Ist-Stand)</title>
+    <style>
+      body {
+        font-family: Calibri, Arial, sans-serif;
+        font-size: 11pt;
+        color: #111;
+        line-height: 1.35;
+      }
+      h1, h2, h3 { margin: 0 0 8px; }
+      h1 { font-size: 20pt; }
+      h2 { font-size: 14pt; margin-top: 18px; }
+      h3 { font-size: 12pt; margin-top: 14px; }
+      .meta { margin: 0 0 14px; color: #444; }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid #bbb;
+        font-size: 10pt;
+        margin-right: 6px;
+      }
+      .ok { background: #e7f6ea; border-color: #7cc58a; }
+      .partial { background: #fff4df; border-color: #d9b26a; }
+      .missing { background: #ffe6e6; border-color: #d08b8b; }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        table-layout: fixed;
+        margin: 10px 0 16px;
+      }
+      th, td {
+        border: 1px solid #999;
+        padding: 7px 8px;
+        vertical-align: top;
+        word-wrap: break-word;
+      }
+      th { background: #f2f2f2; }
+      .col-cat { width: 12%; }
+      .col-rule { width: 26%; }
+      .col-trigger { width: 20%; }
+      .col-impl { width: 22%; }
+      .col-status { width: 10%; }
+      .col-notes { width: 10%; }
+      code { font-family: Consolas, Menlo, monospace; font-size: 10pt; }
+      ul { margin: 6px 0 0 18px; }
+      .small { font-size: 10pt; color: #444; }
+    </style>
+  </head>
+  <body>
+    <h1>Star Cluster – Regel-Matrix (Ist-Stand)</h1>
+    <p class="meta">
+      <span class="badge ok">Implementiert</span>
+      <span class="badge partial">Teilweise</span>
+      <span class="badge missing">Fehlt</span>
+      <br />
+      Quelle (Code): Backend <code>backend/src/game/engine.ts</code>, <code>backend/src/server.ts</code>; Frontend <code>frontend/src/pages/GamePage.tsx</code>.
+    </p>
+
+    <h2>1) Zustandsmaschine / Phasen</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>State</td>
+          <td>LOBBY → SETUP_PHASE_1</td>
+          <td>Creator klickt “Spiel Starten”, min. 2 Spieler</td>
+          <td><code>startGame()</code> in <code>engine.ts</code>, Socket: <code>start_game</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setzt <code>status=setup_phase_1</code>, <code>phase=main</code>, <code>required=station</code>, <code>currentPlayerIndex=0</code>.</td>
+        </tr>
+        <tr>
+          <td>State</td>
+          <td>SETUP_PHASE_1 Ablauf</td>
+          <td>Pro Spieler: 1 Station, danach 1 Hyperlane; Reihenfolge 1→N</td>
+          <td><code>buildStation()</code>/<code>buildHyperlane()</code> + <code>advanceSetupAfterHyperlane()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup ist “kostenlos” (keine Ressourcen-Kosten). Stationen müssen mindestens 2 Kanten Abstand zueinander haben (keine benachbarten Vertices).</td>
+        </tr>
+        <tr>
+          <td>State</td>
+          <td>SETUP_PHASE_1 → SETUP_PHASE_2</td>
+          <td>Letzter Spieler platziert seine Hyperlane</td>
+          <td><code>advanceSetupAfterHyperlane()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Wechselt zu <code>status=setup_phase_2</code>, startet bei Spieler N (<code>currentPlayerIndex=last</code>).</td>
+        </tr>
+        <tr>
+          <td>State</td>
+          <td>SETUP_PHASE_2 Ablauf</td>
+          <td>Pro Spieler: zweite Station + zweite Hyperlane; Reihenfolge N→1</td>
+          <td><code>buildStation()</code>/<code>buildHyperlane()</code> + <code>advanceSetupAfterHyperlane()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup2-Station gibt Start-Ressourcen (siehe Ressourcen). Ausnahme: Die zweite Station muss nicht mit der existierenden Hyperlane verbunden sein; nur in dieser Phase erlaubt.</td>
+        </tr>
+        <tr>
+          <td>State</td>
+          <td>SETUP_PHASE_2 → MAIN_GAME_LOOP</td>
+          <td>Spieler 1 platziert seine Setup2-Hyperlane</td>
+          <td><code>advanceSetupAfterHyperlane()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setzt <code>status=playing</code>, <code>phase=await_roll</code>, <code>currentPlayerIndex=0</code>, <code>setup=null</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>2) Erlaubte Aktionen je Phase</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Turn</td>
+          <td>Nur aktueller Spieler darf Aktionen ausführen</td>
+          <td>Alle Game-Actions prüfen <code>isMyTurn()</code></td>
+          <td><code>engine.ts</code>: <code>isMyTurn()</code> in allen Action-Funktionen</td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>UI gated zusätzlich.</td>
+        </tr>
+        <tr>
+          <td>Setup</td>
+          <td>Setup erzwingt Reihenfolge: erst Station, dann Hyperlane</td>
+          <td><code>setup.required</code> muss passen</td>
+          <td><code>buildStation()</code>/<code>buildHyperlane()</code> prüfen <code>setup.required</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>UI zeigt “Setup 1/2: Station/Hyperlane”.</td>
+        </tr>
+        <tr>
+          <td>Play</td>
+          <td>Würfeln nur in MAIN_GAME_LOOP und nur in <code>phase=await_roll</code></td>
+          <td><code>status=playing</code> und <code>phase=await_roll</code></td>
+          <td><code>handleRoll()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup-Phasen: kein Würfeln.</td>
+        </tr>
+        <tr>
+          <td>Play</td>
+          <td>Bauen nur in <code>phase=main</code></td>
+          <td><code>phase=main</code></td>
+          <td><code>buildStation()</code>, <code>buildHyperlane()</code>, <code>upgradeToStarbase()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Upgrade nur im Main Game Loop, nicht im Setup.</td>
+        </tr>
+        <tr>
+          <td>Play</td>
+          <td>Zugende</td>
+          <td>Nur im Main Game Loop; nicht während Wormhole-Entscheidung</td>
+          <td><code>endTurn()</code> blockt bei <code>phase=wormhole</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup: “Zug Ende” wird nicht verwendet; Setup turnt automatisch nach Hyperlane.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>3) Bau-Regeln / Kosten / Scoring</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Build</td>
+          <td>Station: Kosten & Punkte</td>
+          <td>Main Game: kostet <code>1 metal + 1 gas + 1 food + 1 crystal</code> und gibt +1 Score</td>
+          <td><code>buildStation()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup: Kosten = 0, +1 Score bleibt derzeit aktiv.</td>
+        </tr>
+        <tr>
+          <td>Build</td>
+          <td>Hyperlane: Kosten</td>
+          <td>Main Game: kostet <code>1 metal + 1 gas</code></td>
+          <td><code>buildHyperlane()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup: Kosten = 0.</td>
+        </tr>
+        <tr>
+          <td>Build</td>
+          <td>Sternenbasis: Upgrade</td>
+          <td>Nur wenn Station an Vertex existiert; kostet <code>3 data + 2 crystal</code>; +1 Score</td>
+          <td><code>upgradeToStarbase()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Production (siehe Ressourcen): Sternenbasis produziert doppelt.</td>
+        </tr>
+        <tr>
+          <td>Placement</td>
+          <td>Kein doppeltes Bauen auf gleicher Position</td>
+          <td>Station pro Vertex max 1, Hyperlane pro Edge max 1</td>
+          <td><code>buildStation()</code>/<code>buildHyperlane()</code> prüfen Belegung</td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Placement</td>
+          <td>Connectivity-Regel</td>
+          <td>Wenn Spieler bereits etwas gebaut hat, müssen neue Builds connected sein</td>
+          <td><code>hasConnectionToEdge()</code> + Check in <code>buildStation</code>/<code>buildHyperlane</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Erstes Build darf “frei” platziert werden.</td>
+        </tr>
+        <tr>
+          <td>Placement</td>
+          <td>Setup-Limits</td>
+          <td>Setup1: max 1 Station + 1 Lane; Setup2: max 2 Station + 2 Lane</td>
+          <td>Counts: <code>setup.placementsByPlayerId</code> in <code>engine.ts</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>4) Würfeln / Produktion / Ressourcen</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Dice</td>
+          <td>2W6</td>
+          <td>Bei Roll: <code>d1,d2,sum</code></td>
+          <td><code>handleRoll()</code> erstellt <code>DiceRoll</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Roll nur in Main Game Loop.</td>
+        </tr>
+        <tr>
+          <td>Prod</td>
+          <td>Produktion pro Tile-Nummer</td>
+          <td>Alle Tiles mit <code>numberToken == sum</code> produzieren an angrenzenden Stationen</td>
+          <td><code>distributeProduction()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Station: +1, Sternenbasis: +2, pro Tile summiert.</td>
+        </tr>
+        <tr>
+          <td>Prod</td>
+          <td>Black Hole blockt Produktion</td>
+          <td>Tile mit <code>id == blackHoleTileId</code> produziert nie</td>
+          <td><code>distributeProduction()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Prod</td>
+          <td>Singularity produziert nie</td>
+          <td><code>biome == singularity</code></td>
+          <td><code>distributeProduction()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Setup</td>
+          <td>Start-Ressourcen in Setup Phase 2</td>
+          <td>Beim Setzen der Setup2-Station: +1 Ressource pro angrenzendem Tile (Biome→Ressource)</td>
+          <td><code>giveSetup2StartResources()</code> in <code>buildStation()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Singularity zählt nicht.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>5) “Black Hole” / “Wormhole Jump” (7)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Dice</td>
+          <td>Bei Summe 7: keine Produktion</td>
+          <td><code>sum == 7</code></td>
+          <td><code>handleRoll()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setzt <code>phase=wormhole</code>.</td>
+        </tr>
+        <tr>
+          <td>Wormhole</td>
+          <td>Black Hole versetzen</td>
+          <td>Während <code>phase=wormhole</code> muss Spieler Ziel-Tile wählen</td>
+          <td><code>resolveWormhole()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Frontend: Klick auf Tile verschiebt (Teleport-UI optional).</td>
+        </tr>
+        <tr>
+          <td>Wormhole</td>
+          <td>Bis zu 2 Hyperlanes teleportieren</td>
+          <td>Optional: <code>moves[]</code> (fromEdgeId→toEdgeId), Ziel muss frei sein</td>
+          <td><code>resolveWormhole()</code></td>
+          <td><span class="badge partial">Teilweise</span></td>
+          <td>Backend kann es, UI sendet aktuell keine Moves.</td>
+        </tr>
+        <tr>
+          <td>Black Hole</td>
+          <td>Black Hole “frisst” Rohstoffe (1/6)</td>
+          <td>Nach Produktion bei Nicht-7 Roll: 1/6 Chance</td>
+          <td><code>maybeBlackHoleSteal()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Betroffen: Spieler mit Station an Black-Hole-Tile. Jeder verliert 1 zufälligen Rohstoff, falls vorhanden.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>6) Runden / Board-Rotation / Spielende</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Round</td>
+          <td>Outer Ring rotiert nach kompletter Runde</td>
+          <td>Wenn Spielerwechsel zurück zu Index 0</td>
+          <td><code>endTurn()</code> → <code>rotateOuterRing()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Rotation verschiebt Biome/Nummern im äußeren Ring.</td>
+        </tr>
+        <tr>
+          <td>End</td>
+          <td>Spiel endet nach max. Runden</td>
+          <td>Wenn <code>round &gt; maxRounds</code></td>
+          <td><code>finishIfNeeded()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Winner: höchste <code>score</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>7) Netzwerk / Events / Persistenz</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel</th>
+          <th class="col-trigger">Trigger / Bedingung</th>
+          <th class="col-impl">Implementierung</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Socket</td>
+          <td>Game Actions via Socket.io</td>
+          <td>start_game, roll_dice, resolve_wormhole, build_station, build_hyperlane, upgrade_starbase, end_turn</td>
+          <td><code>backend/src/server.ts</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>State wird nach jeder Action als <code>game_state</code> broadcastet.</td>
+        </tr>
+        <tr>
+          <td>Chat</td>
+          <td>Chat ist Teil des GameState</td>
+          <td>max. 50 Messages, profanity filter, maxLen 200</td>
+          <td><code>send_chat_message</code> in <code>server.ts</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>Bots</td>
+          <td>Bots handeln serverseitig</td>
+          <td>Nach jeder Aktion laufen Bots bis wieder Mensch dran ist</td>
+          <td><code>runBotsUntilHuman()</code> in <code>server.ts</code> + <code>botAct()</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>Setup wird unterstützt.</td>
+        </tr>
+        <tr>
+          <td>Auth</td>
+          <td>Auth + Friends wiederverwendet</td>
+          <td>JWT + Verified Email Check (dev kann seed)</td>
+          <td><code>backend/src/api/auth.ts</code>, <code>backend/src/auth/store.ts</code></td>
+          <td><span class="badge ok">Implementiert</span></td>
+          <td>MongoDB optional per <code>MONGODB_URI</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>8) Bekannte Lücken (gezielt ergänzen)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-cat">Kategorie</th>
+          <th class="col-rule">Regel / Feature</th>
+          <th class="col-trigger">Warum wichtig</th>
+          <th class="col-impl">Wo zu implementieren</th>
+          <th class="col-status">Status</th>
+          <th class="col-notes">Notizen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Trade</td>
+          <td>Schwarzmarkt (dynamische Preise)</td>
+          <td>Kernmechanik deiner Spezifikation</td>
+          <td>Neue Engine-Action + UI Panel</td>
+          <td><span class="badge missing">Fehlt</span></td>
+          <td>Preis-Modell + Limits definieren.</td>
+        </tr>
+        <tr>
+          <td>Setup</td>
+          <td>Abstandsregel für Stationen (optional)</td>
+          <td>Verhindert “zu dichtes” Setup wie bei Catan</td>
+          <td><code>buildStation()</code> (Neighbor-Vertex-Verbot)</td>
+          <td><span class="badge missing">Fehlt</span></td>
+          <td>Benötigt Vertex-Adjazenz aus Edges ableiten.</td>
+        </tr>
+        <tr>
+          <td>Wormhole</td>
+          <td>UI für Hyperlane-Teleport (2 Stück)</td>
+          <td>Unique Twist vollständig nutzbar machen</td>
+          <td>Frontend sendet <code>resolve_wormhole</code> mit <code>moves[]</code></td>
+          <td><span class="badge missing">Fehlt</span></td>
+          <td>Backend ist bereit.</td>
+        </tr>
+        <tr>
+          <td>Balance</td>
+          <td>Scoring (Station im Setup?)</td>
+          <td>Setup-Punkte evtl. ungewollt</td>
+          <td><code>buildStation()</code> / <code>upgradeToStarbase()</code></td>
+          <td><span class="badge partial">Teilweise</span></td>
+          <td>Aktuell gibt Setup-Stationen bereits +Score.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="small">
+      Hinweis: Dieses Dokument beschreibt den aktuell implementierten Stand. Für die nächste Iteration empfiehlt sich pro fehlender Regel ein kleiner Engine-Test (Given/When/Then), dann Implementierung, dann UI.
+    </p>
+  </body>
+</html>
