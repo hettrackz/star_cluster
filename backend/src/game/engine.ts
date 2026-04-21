@@ -22,6 +22,37 @@ import type {
 
 const playerColors: PlayerColor[] = ["red", "blue", "green", "yellow"];
 
+function clampInt(value: number, min: number, max: number) {
+  const n = Math.floor(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+function addBotsUpToMax(state: GameState, maxBots: number): GameState {
+  const desiredBotCount = clampInt(maxBots, 0, 3);
+  const currentBotCount = state.players.filter((p) => p.isBot).length;
+  const availableSlots = Math.max(0, 4 - state.players.length);
+  const botsToAdd = Math.min(availableSlots, Math.max(0, desiredBotCount - currentBotCount));
+  if (botsToAdd <= 0) return state;
+
+  const players = state.players.slice();
+  for (let i = 0; i < botsToAdd; i++) {
+    const botIndex = currentBotCount + i + 1;
+    const color = playerColors[players.length]!;
+    players.push({
+      id: `bot:${botIndex}`,
+      name: `Bot ${botIndex}`,
+      color,
+      avatarUrl: undefined,
+      isBot: true,
+      score: 0,
+      resources: emptyResources(),
+    });
+  }
+
+  return { ...state, players };
+}
+
 function emptyResources(): Record<Resource, number> {
   return { metal: 0, gas: 0, crystal: 0, food: 0, data: 0 };
 }
@@ -48,7 +79,7 @@ export function createInitialGame(
 ): GameState {
   const radius = Math.min(6, Math.max(2, params?.radius ?? 3));
   const maxRounds = Math.min(50, Math.max(5, params?.maxRounds ?? 50));
-  const botCount = Math.min(3, Math.max(0, params?.botCount ?? 0));
+  const maxBots = clampInt(params?.botCount ?? 0, 0, 3);
   const turnLimitMs = Math.min(10 * 60 * 1000, Math.max(15 * 1000, Math.floor((params?.turnLimitSec ?? 45) * 1000)));
   const board = createBoard({ radius, size: 56 });
 
@@ -64,19 +95,6 @@ export function createInitialGame(
     },
   ];
 
-  for (let i = 0; i < botCount; i++) {
-    const color = playerColors[players.length]!;
-    players.push({
-      id: `bot:${i + 1}`,
-      name: `Bot ${i + 1}`,
-      color,
-      avatarUrl: undefined,
-      isBot: true,
-      score: 0,
-      resources: emptyResources(),
-    });
-  }
-
   const centerTile = board.tiles.find((t) => t.q === 0 && t.r === 0)?.id ?? board.tiles[0]!.id;
 
   const game: GameState = {
@@ -84,6 +102,7 @@ export function createInitialGame(
     status: "lobby",
     creatorId,
     players,
+    maxBots,
     currentPlayerIndex: 0,
     round: 1,
     roundStartedAt: Date.now(),
@@ -123,15 +142,16 @@ function createSetupState(state: GameState, step: 1 | 2): SetupState {
 
 export function startGame(state: GameState): GameState {
   if (state.status !== "lobby") return state;
-  if (state.players.length < 2) return state;
-  const shuffledPlayers = state.players.slice();
+  const withBots = addBotsUpToMax(state, state.maxBots);
+  if (withBots.players.length < 2) return state;
+  const shuffledPlayers = withBots.players.slice();
   for (let i = shuffledPlayers.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     const tmp = shuffledPlayers[i]!;
     shuffledPlayers[i] = shuffledPlayers[j]!;
     shuffledPlayers[j] = tmp;
   }
-  const withPlayers: GameState = { ...state, players: shuffledPlayers };
+  const withPlayers: GameState = { ...withBots, players: shuffledPlayers };
   const next: GameState = {
     ...withPlayers,
     status: "setup_phase_1",

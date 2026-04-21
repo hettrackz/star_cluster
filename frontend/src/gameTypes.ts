@@ -123,6 +123,7 @@ export interface GameState {
   status: 'lobby' | 'setup_phase_1' | 'setup_phase_2' | 'playing' | 'finished'
   creatorId: string
   players: Player[]
+  maxBots: number
   currentPlayerIndex: number
   round: number
   roundStartedAt: number

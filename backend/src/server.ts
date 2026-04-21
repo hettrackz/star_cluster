@@ -353,10 +353,14 @@ io.on("connection", (socket) => {
 
     markHumanActivity(gameId);
 
-    // Check if player is already in the game
-    let player = game.state.players.find(p => p.id === authedUserId);
-    
-    // If not, and there's space, add them
+    const player = game.state.players.find((p) => p.id === authedUserId);
+
+    if (!player && game.state.status !== "lobby") {
+      socket.emit("error_message", { message: "Game already started." });
+      return;
+    }
+
+    // If not, and there's space, add them (only while in lobby)
     if (!player && game.state.players.length < 4) {
       const newPlayer: Player = {
         id: authedUserId,
@@ -391,8 +395,9 @@ io.on("connection", (socket) => {
     if (game.state.creatorId !== meta.playerId) {
       return socket.emit("error_message", { message: "Only the creator can start the game." });
     }
-    if (game.state.players.length < 2) {
-      return socket.emit("error_message", { message: "Need at least 2 players to start." });
+    const possibleBots = Math.min(game.state.maxBots ?? 0, Math.max(0, 4 - game.state.players.length));
+    if (game.state.players.length + possibleBots < 2) {
+      return socket.emit("error_message", { message: "Need at least 2 players (humans or bots) to start." });
     }
 
     markHumanActivity(gameId);

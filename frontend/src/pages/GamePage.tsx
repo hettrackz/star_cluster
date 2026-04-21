@@ -10,7 +10,7 @@ const tMap = {
     metal: 'Metall', crystal: 'Kristall', food: 'Nahrung', data: 'Daten', leaveGame: 'Spiel verlassen',
     leaveGameConfirm: 'Spiel wirklich beenden und zur Lobby zurückkehren?',
     langToggle: 'EN', dragPlace: 'Ziehen zum Platzieren', dragCancel: 'ESC: Abbrechen',
-    startChoose: 'Startpunkt wählen', targetChoose: 'Zielpunkt wählen'
+    startChoose: 'Startpunkt wählen', targetChoose: 'Zielpunkt wählen', startGame: 'Spiel starten'
   },
   en: {
     round: 'Round', setup: 'Setup', time: 'Round Time', build: 'Build', market: 'Market',
@@ -21,7 +21,7 @@ const tMap = {
     metal: 'Metal', crystal: 'Crystal', food: 'Food', data: 'Data', leaveGame: 'Leave Game',
     leaveGameConfirm: 'Leave the game and return to the lobby?',
     langToggle: 'DE', dragPlace: 'Drag to place', dragCancel: 'ESC: Cancel',
-    startChoose: 'Choose start point', targetChoose: 'Choose target point'
+    startChoose: 'Choose start point', targetChoose: 'Choose target point', startGame: 'Start game'
   }
 }
 
@@ -519,16 +519,12 @@ function GameInner() {
   }, [state?.board.edges])
 
   const isMyTurn = Boolean(state && state.players[state.currentPlayerIndex]?.id === meId)
-  const startGameRequestedRef = useRef(false)
-  useEffect(() => {
-    if (!state) return
-    if (startGameRequestedRef.current) return
-    if (state.status !== 'lobby') return
-    if (state.players.length < 2) return
-    if (state.creatorId !== meId) return
-    startGameRequestedRef.current = true
-    startGame()
-  }, [state, meId, startGame])
+  const canStartGame = Boolean(
+    state &&
+      state.status === 'lobby' &&
+      state.creatorId === meId &&
+      state.players.length + Math.min(state.maxBots ?? 0, Math.max(0, 4 - state.players.length)) >= 2,
+  )
 
   const axialDistance = (q: number, r: number) => {
     const x = q
@@ -2097,7 +2093,20 @@ function GameInner() {
           }}>
             <span className="material-symbols-rounded" aria-hidden="true">translate</span>
           </button>
-          <div className={`star-meta-pill ${remainingSec <= 5 ? 'star-pulse-red' : ''}`}>{t.time} {turnTimer}</div>
+          {state.status === 'lobby' && state.creatorId === meId ? (
+            <button
+              type="button"
+              className="star-btn"
+              onClick={() => startGame()}
+              disabled={!canStartGame}
+            >
+              <span className="material-symbols-rounded" aria-hidden="true">play_arrow</span>
+              {t.startGame}
+            </button>
+          ) : null}
+          {state.status !== 'lobby' ? (
+            <div className={`star-meta-pill ${remainingSec <= 5 ? 'star-pulse-red' : ''}`}>{t.time} {turnTimer}</div>
+          ) : null}
           <button
             type="button"
             className="star-topbar-close"

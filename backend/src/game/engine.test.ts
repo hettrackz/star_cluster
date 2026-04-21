@@ -4,7 +4,8 @@ import { botAct, buildHyperlane, buildStation, createInitialGame, handleRoll, st
 describe("Star Cluster Engine", () => {
   it("erstellt ein neues Spiel mit Board und optionalen Bots", () => {
     const game = createInitialGame("p1", "Alice", undefined, { radius: 3, maxRounds: 10, botCount: 3 });
-    expect(game.players).toHaveLength(4);
+    expect(game.players).toHaveLength(1);
+    expect(game.maxBots).toBe(3);
     expect(game.board.tiles.length).toBeGreaterThan(0);
     expect(game.board.vertices.length).toBeGreaterThan(0);
     expect(game.board.edges.length).toBeGreaterThan(0);
