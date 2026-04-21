@@ -23,8 +23,10 @@ const envCandidates = [
   path.resolve(__dirname, "../../.env"),
   path.resolve(__dirname, "../.env"),
 ];
-for (const p of envCandidates) {
-  dotenv.config({ path: p });
+if (process.env.NODE_ENV !== "production") {
+  for (const p of envCandidates) {
+    dotenv.config({ path: p });
+  }
 }
 
 const playerColors: PlayerColor[] = ["red", "blue", "green", "yellow"];
