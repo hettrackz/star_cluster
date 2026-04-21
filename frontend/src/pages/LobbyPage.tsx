@@ -18,6 +18,7 @@ export function LobbyPage() {
   const [botCount, setBotCount] = useState(3)
   const [radius, setRadius] = useState(3)
   const [maxRounds, setMaxRounds] = useState(15)
+  const [turnLimitSec, setTurnLimitSec] = useState(45)
   const [occupiedAvatars, setOccupiedAvatars] = useState<string[]>([])
   const [friendEmail, setFriendEmail] = useState('')
   const [friends, setFriends] = useState<Array<{ id: string; email: string; name: string; avatarUrl: string | null }>>([])
@@ -151,6 +152,7 @@ export function LobbyPage() {
           botCount,
           radius,
           maxRounds,
+          turnLimitSec,
         }),
       })
 
@@ -275,6 +277,17 @@ export function LobbyPage() {
           <label>
             Runden (5-50)
             <input type="number" min={5} max={50} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} />
+          </label>
+          <label>
+            {lang === 'en' ? 'Round time (sec)' : 'Rundenzeit (Sek.)'}
+            <input
+              type="number"
+              min={15}
+              max={600}
+              step={5}
+              value={turnLimitSec}
+              onChange={(e) => setTurnLimitSec(Number(e.target.value))}
+            />
           </label>
         </div>
       </div>

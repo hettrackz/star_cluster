@@ -8,6 +8,7 @@ const tMap = {
     starbase: 'Sternenbasis', hyperlane: 'Hyperlane', warp: 'Warp-Lane', blackhole: 'Schwarzes Loch',
     close: 'Schließen', cancel: 'Abbrechen', events: 'Ereignisse', dice: 'Würfel', gas: 'Gas',
     metal: 'Metall', crystal: 'Kristall', food: 'Nahrung', data: 'Daten', leaveGame: 'Spiel verlassen',
+    leaveGameConfirm: 'Spiel wirklich beenden und zur Lobby zurückkehren?',
     langToggle: 'EN', dragPlace: 'Ziehen zum Platzieren', dragCancel: 'ESC: Abbrechen',
     startChoose: 'Startpunkt wählen', targetChoose: 'Zielpunkt wählen'
   },
@@ -18,6 +19,7 @@ const tMap = {
     starbase: 'Starbase', hyperlane: 'Hyperlane', warp: 'Warp-Lane', blackhole: 'Black Hole',
     close: 'Close', cancel: 'Cancel', events: 'Events', dice: 'Dice', gas: 'Gas',
     metal: 'Metal', crystal: 'Crystal', food: 'Food', data: 'Data', leaveGame: 'Leave Game',
+    leaveGameConfirm: 'Leave the game and return to the lobby?',
     langToggle: 'DE', dragPlace: 'Drag to place', dragCancel: 'ESC: Cancel',
     startChoose: 'Choose start point', targetChoose: 'Choose target point'
   }
@@ -412,27 +414,18 @@ function buildIcon(kind: 'station' | 'hyperlane' | 'upgrade' | 'warp' | 'blackho
   }
   if (kind === 'hyperlane') {
     return wrap(
-      <svg viewBox="0 0 64 64" aria-label="Hyperlane">
-        <path d="M10 50 C20 20, 44 20, 54 14" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
-        <circle cx="10" cy="50" r="5" fill="currentColor" />
-        <circle cx="54" cy="14" r="5" fill="currentColor" />
-      </svg>
+      <span className="material-symbols-rounded" aria-hidden="true">route</span>
     )
   }
   return wrap(
-    <svg viewBox="0 0 64 64" aria-label="Warp-Lane">
-      <path d="M8 38 C18 10, 46 10, 56 38" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
-      <path d="M8 38 C18 58, 46 58, 56 38" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" opacity="0.55" />
-      <circle cx="8" cy="38" r="5" fill="currentColor" />
-      <circle cx="56" cy="38" r="5" fill="currentColor" />
-    </svg>
+    <span className="material-symbols-rounded" aria-hidden="true">swap_horiz</span>
   )
 }
 
 function GameInner() {
   const [lang, setLang] = useState<'de'|'en'>(() => (window.localStorage.getItem('star_lang') as 'de'|'en') || 'de')
   const t = tMap[lang]
-  const { state, lastError, lastDiceEvent, startGame, rollDice, buildStation, buildHyperlane, buildWarpLane, upgradeStarbase, endTurn, resolveWormhole, tradeBlackMarket } = useGameState()
+  const { state, lastError, lastDiceEvent, startGame, rollDice, buildStation, buildHyperlane, buildWarpLane, upgradeStarbase, endTurn, resolveWormhole, tradeBlackMarket, createTradeOffer, cancelTradeOffer, declineTradeOffer, acceptTradeOffer, counterTradeOffer } = useGameState()
   const { user } = useAuth()
   const navigate = useNavigate()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -444,6 +437,11 @@ function GameInner() {
   const [isRolling, setIsRolling] = useState(false)
   const [marketGive, setMarketGive] = useState<Resource>('metal')
   const [marketReceive, setMarketReceive] = useState<Resource>('gas')
+  const [marketTab, setMarketTab] = useState<'hole' | 'players'>('hole')
+  const [marketToPlayerId, setMarketToPlayerId] = useState<string | null>(null)
+  const [offerGive, setOfferGive] = useState<Partial<Record<Resource, number>>>({})
+  const [offerWant, setOfferWant] = useState<Partial<Record<Resource, number>>>({})
+  const [counterForOfferId, setCounterForOfferId] = useState<string | null>(null)
   const [topbarH, setTopbarH] = useState(84)
   const [bottombarH, setBottombarH] = useState(84)
   const [zoomLevel, setZoomLevel] = useState<0 | 1 | 2>(1)
@@ -724,6 +722,24 @@ function GameInner() {
   useEffect(() => {
     stateRefLocal.current = state
   }, [state])
+
+  useEffect(() => {
+    if (openMenu !== 'market') return
+    if (!state) return
+    const ro: Resource[] = ['metal', 'gas', 'crystal', 'food', 'data']
+
+    const pool = state.blackHolePool
+    const availableReceive = ro.filter((r) => (pool?.[r] ?? 0) > 0)
+    if (availableReceive.length && (pool?.[marketReceive] ?? 0) <= 0) {
+      setMarketReceive(availableReceive[0]!)
+    }
+
+    const meLocal = state.players.find((p) => p.id === meId) ?? null
+    const availableGive = ro.filter((r) => (meLocal?.resources?.[r] ?? 0) > 0)
+    if (availableGive.length && (meLocal?.resources?.[marketGive] ?? 0) <= 0) {
+      setMarketGive(availableGive[0]!)
+    }
+  }, [openMenu, state, meId, marketReceive, marketGive])
 
   useEffect(() => {
     meIdRef.current = meId
@@ -1898,8 +1914,7 @@ function GameInner() {
     productionAnimTimeoutsRef.current.push(t2)
   }, [state])
 
-  const TURN_LIMIT_MS = 45000
-  const remainingTurnMs = state ? Math.max(0, TURN_LIMIT_MS - (nowMs - state.roundStartedAt)) : 0
+  const remainingTurnMs = state ? Math.max(0, (state.turnLimitMs ?? 45000) - (nowMs - state.turnStartedAt)) : 0
   const remainingSec = Math.ceil(remainingTurnMs / 1000)
   const prevRemainingSecRef = useRef(remainingSec)
   
@@ -1948,7 +1963,46 @@ function GameInner() {
     : canBuildHyperlane && affordHyperlane
   const canUpgradeNow = canUpgrade && affordStarbase
   const canWarpNow = isMyTurn && state.status === 'playing' && state.phase === 'main' && affordWarpLane
-  const canMarket = isMyTurn && state.status === 'playing' && state.phase === 'main' && marketGive !== marketReceive && (me?.resources[marketGive] ?? 0) >= 4
+  const resourceOrder: Resource[] = ['metal', 'gas', 'crystal', 'food', 'data']
+  const resourceLabel = (r: Resource) =>
+    r === 'metal' ? t.metal : r === 'gas' ? t.gas : r === 'crystal' ? t.crystal : r === 'food' ? t.food : t.data
+  const computeBlackHoleRates = (pool: Record<Resource, number>) => {
+    const available = resourceOrder
+      .map((r) => ({ r, n: pool[r] ?? 0 }))
+      .filter((x) => x.n > 0)
+      .sort((a, b) => b.n - a.n || a.r.localeCompare(b.r))
+
+    const result = new Map<Resource, number>()
+    const n = available.length
+    if (n === 0) return result
+    if (n === 1) {
+      result.set(available[0]!.r, 2)
+      return result
+    }
+    if (n === 2) {
+      result.set(available[0]!.r, 2)
+      result.set(available[1]!.r, 4)
+      return result
+    }
+
+    const topCount = Math.ceil(n / 3)
+    const midCount = Math.ceil((n - topCount) / 2)
+    for (let i = 0; i < n; i++) {
+      const rate = i < topCount ? 2 : i < topCount + midCount ? 3 : 4
+      result.set(available[i]!.r, rate)
+    }
+    return result
+  }
+  const blackHoleRates = computeBlackHoleRates(state.blackHolePool)
+  const marketRate = blackHoleRates.get(marketReceive) ?? null
+  const canMarket =
+    isMyTurn &&
+    state.status === 'playing' &&
+    state.phase === 'main' &&
+    marketGive !== marketReceive &&
+    (state.blackHolePool[marketReceive] ?? 0) > 0 &&
+    marketRate !== null &&
+    (me?.resources[marketGive] ?? 0) >= marketRate
   const canBuildAnyNow = Boolean(canBuildStationNow || canBuildHyperlaneNow || canUpgradeNow || canWarpNow)
   const corners = [
     state.players[0] ?? null,
@@ -1961,6 +2015,39 @@ function GameInner() {
   const showLog = openMenu === 'log'
   const showBuild = openMenu === 'build'
   const showMarket = openMenu === 'market'
+
+  const sumAmounts = (amounts: Partial<Record<Resource, number>>) =>
+    (Object.values(amounts) as number[]).reduce((a, b) => a + (b ?? 0), 0)
+  const canPay = (cost: Partial<Record<Resource, number>>) => {
+    for (const [k, v] of Object.entries(cost) as Array<[Resource, number]>) {
+      if ((me?.resources[k] ?? 0) < (v ?? 0)) return false
+    }
+    return true
+  }
+  const cleanAmounts = (amounts: Partial<Record<Resource, number>>) => {
+    const out: Partial<Record<Resource, number>> = {}
+    for (const r of resourceOrder) {
+      const v = Math.floor(amounts[r] ?? 0)
+      if (!Number.isFinite(v) || v <= 0) continue
+      out[r] = v
+    }
+    return out
+  }
+  const renderAmounts = (amounts: Partial<Record<Resource, number>>) => {
+    const entries = resourceOrder.map((r) => ({ r, n: Math.floor(amounts[r] ?? 0) })).filter((x) => x.n > 0)
+    if (!entries.length) return <span className="subtle-text">—</span>
+    return (
+      <>
+        {entries.map((x) => (
+          <span key={x.r} className="star-trade-offer-pill">
+            <img className="star-market-icon star-mini-hex" src={resourceIconSrc(x.r)} alt={x.r} />
+            <span className="star-trade-offer-pill-label">{resourceLabel(x.r)}</span>
+            <span className="star-trade-offer-pill-count">{x.n}</span>
+          </span>
+        ))}
+      </>
+    )
+  }
   const standings = state.players
     .slice()
     .sort((a, b) => b.score - a.score)
@@ -1991,8 +2078,11 @@ function GameInner() {
     <div className="page star-game">
       <div className="star-topbar" ref={topbarRef}>
         <div className="star-topbar-left">
-          <div className="star-meta-pill">{t.round} {state.round}/{state.maxRounds}</div>
-          {setupLabel ? <div className="star-meta-pill">{setupLabel}</div> : null}
+          <img className="star-topbar-logo" src="/avatars/Logo.png" alt="Star Cluster" />
+          <div className="star-topbar-meta">
+            <div className="star-meta-pill">{t.round} {state.round}/{state.maxRounds}</div>
+            {setupLabel ? <div className="star-meta-pill">{setupLabel}</div> : null}
+          </div>
         </div>
         <div className="star-topbar-center">
           {turnEventText ? <div className="star-event-bar" aria-label={t.events}>{turnEventText}</div> : null}
@@ -2005,13 +2095,20 @@ function GameInner() {
               return n
             })
           }}>
-            {t.langToggle}
+            <span className="material-symbols-rounded" aria-hidden="true">translate</span>
           </button>
           <div className={`star-meta-pill ${remainingSec <= 5 ? 'star-pulse-red' : ''}`}>{t.time} {turnTimer}</div>
-          <button type="button" className="star-topbar-close" aria-label={t.leaveGame} title={t.leaveGame} onClick={() => navigate('/lobby')}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path d="M18 6L6 18M6 6l12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+          <button
+            type="button"
+            className="star-topbar-close"
+            aria-label={t.leaveGame}
+            title={t.leaveGame}
+            onClick={() => {
+              if (!window.confirm(t.leaveGameConfirm)) return
+              navigate('/lobby')
+            }}
+          >
+            <span className="material-symbols-rounded" aria-hidden="true">close</span>
           </button>
         </div>
       </div>
@@ -2330,7 +2427,7 @@ function GameInner() {
               {eventToast.text}
             </div>
           ) : null}
-          {showBuild || showMarket ? (
+          {showBuild ? (
             <div className="star-overlay-bottom-center">
               {showBuild ? (
                 <div className="star-action-panel">
@@ -2359,14 +2456,9 @@ function GameInner() {
                       >
                         {buildIcon(opt.kind, me?.color)}
                         {opt.enabled ? (
-                          <svg className="star-build-grip" viewBox="0 0 12 12" aria-hidden="true">
-                            <circle cx="3" cy="3" r="1" />
-                            <circle cx="7" cy="3" r="1" />
-                            <circle cx="3" cy="6" r="1" />
-                            <circle cx="7" cy="6" r="1" />
-                            <circle cx="3" cy="9" r="1" />
-                            <circle cx="7" cy="9" r="1" />
-                          </svg>
+                          <span className="star-build-grip material-symbols-rounded" aria-hidden="true">
+                            drag_indicator
+                          </span>
                         ) : null}
                       </div>
                       <div className="star-build-body">
@@ -2379,37 +2471,431 @@ function GameInner() {
                   ))}
                 </div>
               ) : null}
-              {showMarket ? (
-                <div className="star-action-panel">
-                  <div className="star-market-row">
-                    <span>Gebe 4x</span>
-                    <img className="star-market-icon star-mini-hex" src={resourceIconSrc(marketGive)} alt={marketGive} />
-                    <select value={marketGive} onChange={(e) => setMarketGive(e.target.value as Resource)}>
-                      <option value="metal">metal</option>
-                      <option value="gas">gas</option>
-                      <option value="crystal">crystal</option>
-                      <option value="food">food</option>
-                      <option value="data">data</option>
-                    </select>
-                    <span>erhalte 1x</span>
-                    <img className="star-market-icon star-mini-hex" src={resourceIconSrc(marketReceive)} alt={marketReceive} />
-                    <select value={marketReceive} onChange={(e) => setMarketReceive(e.target.value as Resource)}>
-                      <option value="metal">metal</option>
-                      <option value="gas">gas</option>
-                      <option value="crystal">crystal</option>
-                      <option value="food">food</option>
-                      <option value="data">data</option>
-                    </select>
+            </div>
+          ) : null}
+          {showMarket ? (
+            <div
+              className="star-overlay-panel star-overlay-market"
+              role="dialog"
+              aria-label="Schwarzmarkt"
+              style={{ top: topbarH + 10, bottom: bottombarH + 10 }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerMove={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onMouseMove={(e) => e.stopPropagation()}
+              onMouseUp={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="star-panel star-market-panel">
+                <div className="star-panel-title">
+                  <div className="star-panel-title-row">
+                    <span>{t.market}</span>
+                    <button type="button" className="star-btn" onClick={() => setOpenMenu(null)}>
+                      {t.close}
+                    </button>
                   </div>
-                  <button type="button" className="star-btn" disabled={!canMarket} onClick={() => tradeBlackMarket({ give: marketGive, receive: marketReceive })}>
-                    Tauschen [{canMarket ? 'moeglich' : 'nicht moeglich'}]
+                </div>
+                <div className="star-market-tabs">
+                  <button type="button" className={`star-btn ${marketTab === 'hole' ? 'active' : ''}`} onClick={() => setMarketTab('hole')}>
+                    {t.blackhole}
+                  </button>
+                  <button type="button" className={`star-btn ${marketTab === 'players' ? 'active' : ''}`} onClick={() => setMarketTab('players')}>
+                    Spielerhandel
                   </button>
                 </div>
-              ) : null}
+                <div className="star-market-body">
+                  {marketTab === 'hole' ? (
+                    <>
+                      <div>
+                        <div className="star-market-section-title">Du gibst</div>
+                        <div className="star-market-grid" style={{ marginTop: 8 }}>
+                          {resourceOrder.map((r) => (
+                            <button
+                              key={r}
+                              type="button"
+                              className={`star-market-chip ${marketGive === r ? 'selected' : ''}`}
+                              onClick={() => setMarketGive(r)}
+                              disabled={(me?.resources[r] ?? 0) <= 0}
+                            >
+                              <div className="star-market-chip-top">
+                                <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                <span>{resourceLabel(r)}</span>
+                              </div>
+                              <div className="star-market-chip-sub">Du hast: {me?.resources[r] ?? 0}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="star-market-section-title">Du bekommst (aus dem Loch)</div>
+                        <div className="star-market-grid" style={{ marginTop: 8 }}>
+                          {resourceOrder.map((r) => {
+                            const available = (state.blackHolePool[r] ?? 0) > 0
+                            const rate = available ? (blackHoleRates.get(r) ?? 4) : null
+                            return (
+                              <button
+                                key={r}
+                                type="button"
+                                className={`star-market-chip ${marketReceive === r ? 'selected' : ''}`}
+                                onClick={() => setMarketReceive(r)}
+                                disabled={!available}
+                              >
+                                <div className="star-market-chip-top">
+                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                  <span>{resourceLabel(r)}</span>
+                                </div>
+                                <div className="star-market-chip-sub">
+                                  Im Loch: {state.blackHolePool[r] ?? 0}
+                                  {rate ? ` · Kurs ${rate}:1` : ''}
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="star-trade-offer">
+                        <div className="star-trade-offer-title">
+                          <span>Deal</span>
+                          <span style={{ opacity: 0.75 }}>
+                            {marketRate ? `${marketRate}:1` : '—'}
+                          </span>
+                        </div>
+                        <div className="star-trade-offer-amounts">
+                          <span className="star-trade-offer-pill">
+                            <img className="star-market-icon star-mini-hex" src={resourceIconSrc(marketGive)} alt={marketGive} />
+                            <span className="star-trade-offer-pill-label">{resourceLabel(marketGive)}</span>
+                            <span className="star-trade-offer-pill-count">{marketRate ?? '—'}</span>
+                          </span>
+                          <span style={{ opacity: 0.65, alignSelf: 'center' }} aria-hidden="true">
+                            <span className="material-symbols-rounded" aria-hidden="true">arrow_forward</span>
+                          </span>
+                          <span className="star-trade-offer-pill">
+                            <img className="star-market-icon star-mini-hex" src={resourceIconSrc(marketReceive)} alt={marketReceive} />
+                            <span className="star-trade-offer-pill-label">{resourceLabel(marketReceive)}</span>
+                            <span className="star-trade-offer-pill-count">1</span>
+                          </span>
+                        </div>
+                        <div className="star-trade-offer-actions">
+                          <button
+                            type="button"
+                            className="star-btn"
+                            disabled={!canMarket}
+                            onClick={() => tradeBlackMarket({ give: marketGive, receive: marketReceive })}
+                          >
+                            Tauschen
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <div className="star-market-section-title">Mitspieler</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                          <button
+                            type="button"
+                            className={`star-btn star-market-player-btn ${marketToPlayerId === null ? 'active' : ''}`}
+                            onClick={() => setMarketToPlayerId(null)}
+                          >
+                            <div className="star-market-player-icon" aria-hidden="true">
+                              <span className="material-symbols-rounded" aria-hidden="true">groups</span>
+                            </div>
+                            <div className="star-market-player-name">An alle</div>
+                          </button>
+                          {state.players
+                            .filter((p) => p.id !== meId)
+                            .map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                className={`star-btn star-market-player-btn ${marketToPlayerId === p.id ? 'active' : ''}`}
+                                onClick={() => setMarketToPlayerId(p.id)}
+                              >
+                                <div className="star-market-player-icon">
+                                  {p.avatarUrl ? (
+                                    <img src={p.avatarUrl} alt={p.name} className="star-market-player-avatar" />
+                                  ) : (
+                                    <div className="star-market-player-avatar-fallback" style={{ background: playerColor(p.color) }} />
+                                  )}
+                                </div>
+                                <div className="star-market-player-name">{p.name}</div>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="star-market-section-title">Du gibst</div>
+                        <div className="star-market-stepper-row" style={{ marginTop: 8 }}>
+                          {resourceOrder.map((r) => {
+                            const have = me?.resources[r] ?? 0
+                            const cur = Math.floor(offerGive[r] ?? 0)
+                            return (
+                              <div key={r} className="star-market-stepper">
+                                <div className="star-market-stepper-top">
+                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                  <span>{resourceLabel(r)}</span>
+                                </div>
+                                <div className="star-market-stepper-controls">
+                                  <button
+                                    type="button"
+                                    className="star-market-stepper-btn"
+                                    aria-label={`${resourceLabel(r)} minus 1`}
+                                    title={`${resourceLabel(r)} minus 1`}
+                                    onClick={() =>
+                                      setOfferGive((prev) => {
+                                        const next = { ...prev }
+                                        const v = Math.max(0, Math.floor((next[r] ?? 0) - 1))
+                                        if (v <= 0) delete next[r]
+                                        else next[r] = v
+                                        return next
+                                      })
+                                    }
+                                    disabled={cur <= 0}
+                                  >
+                                    <span className="material-symbols-rounded" aria-hidden="true">remove</span>
+                                  </button>
+                                  <div className="star-market-stepper-count">{cur}</div>
+                                  <button
+                                    type="button"
+                                    className="star-market-stepper-btn"
+                                    aria-label={`${resourceLabel(r)} plus 1`}
+                                    title={`${resourceLabel(r)} plus 1`}
+                                    onClick={() =>
+                                      setOfferGive((prev) => {
+                                        const next = { ...prev }
+                                        const v = Math.min(have, Math.floor((next[r] ?? 0) + 1))
+                                        if (v <= 0) delete next[r]
+                                        else next[r] = v
+                                        return next
+                                      })
+                                    }
+                                    disabled={cur >= have}
+                                  >
+                                    <span className="material-symbols-rounded" aria-hidden="true">add</span>
+                                  </button>
+                                </div>
+                                <div className="star-market-chip-sub">Du hast: {have}</div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="star-market-section-title">Du willst</div>
+                        <div className="star-market-stepper-row" style={{ marginTop: 8 }}>
+                          {resourceOrder.map((r) => {
+                            const cur = Math.floor(offerWant[r] ?? 0)
+                            return (
+                              <div key={r} className="star-market-stepper">
+                                <div className="star-market-stepper-top">
+                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                  <span>{resourceLabel(r)}</span>
+                                </div>
+                                <div className="star-market-stepper-controls">
+                                  <button
+                                    type="button"
+                                    className="star-market-stepper-btn"
+                                    aria-label={`${resourceLabel(r)} minus 1`}
+                                    title={`${resourceLabel(r)} minus 1`}
+                                    onClick={() =>
+                                      setOfferWant((prev) => {
+                                        const next = { ...prev }
+                                        const v = Math.max(0, Math.floor((next[r] ?? 0) - 1))
+                                        if (v <= 0) delete next[r]
+                                        else next[r] = v
+                                        return next
+                                      })
+                                    }
+                                    disabled={cur <= 0}
+                                  >
+                                    <span className="material-symbols-rounded" aria-hidden="true">remove</span>
+                                  </button>
+                                  <div className="star-market-stepper-count">{cur}</div>
+                                  <button
+                                    type="button"
+                                    className="star-market-stepper-btn"
+                                    aria-label={`${resourceLabel(r)} plus 1`}
+                                    title={`${resourceLabel(r)} plus 1`}
+                                    onClick={() =>
+                                      setOfferWant((prev) => {
+                                        const next = { ...prev }
+                                        const v = Math.min(20, Math.floor((next[r] ?? 0) + 1))
+                                        if (v <= 0) delete next[r]
+                                        else next[r] = v
+                                        return next
+                                      })
+                                    }
+                                  >
+                                    <span className="material-symbols-rounded" aria-hidden="true">add</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="star-trade-offer">
+                        <div className="star-trade-offer-title">
+                          <span>Angebot</span>
+                          <span style={{ opacity: 0.75 }}>
+                            {marketToPlayerId
+                              ? `an ${state.players.find((p) => p.id === marketToPlayerId)?.name ?? '—'}`
+                              : 'an alle'}
+                          </span>
+                        </div>
+                        <div className="star-trade-offer-amounts">
+                          <span style={{ opacity: 0.8 }}>Gib:</span>
+                          {renderAmounts(offerGive)}
+                          <span style={{ opacity: 0.8 }}>Will:</span>
+                          {renderAmounts(offerWant)}
+                        </div>
+                        <div className="star-trade-offer-actions">
+                          <button
+                            type="button"
+                            className="star-btn"
+                            disabled={
+                              !isMyTurn ||
+                              state.status !== 'playing' ||
+                              state.phase !== 'main' ||
+                              sumAmounts(offerGive) <= 0 ||
+                              sumAmounts(offerWant) <= 0 ||
+                              !canPay(offerGive)
+                            }
+                            onClick={() => {
+                              const give = cleanAmounts(offerGive)
+                              const want = cleanAmounts(offerWant)
+                              createTradeOffer({ toPlayerId: marketToPlayerId, give, want })
+                              setOfferGive({})
+                              setOfferWant({})
+                              setCounterForOfferId(null)
+                            }}
+                          >
+                            Angebot senden
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="star-market-section-title">Eingehend</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+                          {state.tradeOffers
+                            .filter((o) => o.status === 'open')
+                            .filter((o) => o.fromPlayerId !== meId)
+                            .filter((o) => o.toPlayerId === null || o.toPlayerId === meId)
+                            .slice()
+                            .reverse()
+                            .map((o) => {
+                              const from = state.players.find((p) => p.id === o.fromPlayerId)
+                              const canAccept = state.players[state.currentPlayerIndex]?.id === o.fromPlayerId
+                              return (
+                                <div key={o.id} className="star-trade-offer">
+                                  <div className="star-trade-offer-title">
+                                    <span>Von {from?.name ?? '—'}</span>
+                                    <span style={{ opacity: 0.75 }}>{new Date(o.createdAt).toLocaleTimeString()}</span>
+                                  </div>
+                                  <div className="star-trade-offer-amounts">
+                                    <span style={{ opacity: 0.8 }}>Du gibst:</span>
+                                    {renderAmounts(o.want)}
+                                    <span style={{ opacity: 0.8 }}>Du bekommst:</span>
+                                    {renderAmounts(o.give)}
+                                  </div>
+                                  <div className="star-trade-offer-actions">
+                                    <button type="button" className="star-btn" onClick={() => declineTradeOffer({ offerId: o.id })}>
+                                      Ablehnen
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="star-btn"
+                                      disabled={!canAccept}
+                                      onClick={() => acceptTradeOffer({ offerId: o.id })}
+                                    >
+                                      Akzeptieren
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="star-btn"
+                                      onClick={() => {
+                                        setMarketToPlayerId(o.fromPlayerId)
+                                        setOfferGive(cleanAmounts(o.want))
+                                        setOfferWant(cleanAmounts(o.give))
+                                        setCounterForOfferId(o.id)
+                                      }}
+                                    >
+                                      Gegenvorschlag
+                                    </button>
+                                    {counterForOfferId === o.id ? (
+                                      <button
+                                        type="button"
+                                        className="star-btn"
+                                        disabled={sumAmounts(offerGive) <= 0 || sumAmounts(offerWant) <= 0 || !canPay(offerGive)}
+                                        onClick={() => {
+                                          counterTradeOffer({ offerId: o.id, give: cleanAmounts(offerGive), want: cleanAmounts(offerWant) })
+                                          setCounterForOfferId(null)
+                                          setOfferGive({})
+                                          setOfferWant({})
+                                        }}
+                                      >
+                                        Senden
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          {!state.tradeOffers.some((o) => o.status === 'open' && o.fromPlayerId !== meId && (o.toPlayerId === null || o.toPlayerId === meId)) ? (
+                            <div className="subtle-text">Keine offenen Angebote.</div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="star-market-section-title">Ausgehend</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+                          {state.tradeOffers
+                            .filter((o) => o.status === 'open' && o.fromPlayerId === meId)
+                            .slice()
+                            .reverse()
+                            .map((o) => {
+                              const to = o.toPlayerId ? state.players.find((p) => p.id === o.toPlayerId) : null
+                              return (
+                                <div key={o.id} className="star-trade-offer">
+                                  <div className="star-trade-offer-title">
+                                    <span>{to ? `An ${to.name}` : 'An alle'}</span>
+                                    <span style={{ opacity: 0.75 }}>{new Date(o.createdAt).toLocaleTimeString()}</span>
+                                  </div>
+                                  <div className="star-trade-offer-amounts">
+                                    <span style={{ opacity: 0.8 }}>Du gibst:</span>
+                                    {renderAmounts(o.give)}
+                                    <span style={{ opacity: 0.8 }}>Du willst:</span>
+                                    {renderAmounts(o.want)}
+                                  </div>
+                                  <div className="star-trade-offer-actions">
+                                    <button type="button" className="star-btn" onClick={() => cancelTradeOffer({ offerId: o.id })}>
+                                      Zurückziehen
+                                    </button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          {!state.tradeOffers.some((o) => o.status === 'open' && o.fromPlayerId === meId) ? (
+                            <div className="subtle-text">Keine offenen Angebote.</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           ) : null}
           {showLog ? (
-            <div className="star-overlay-panel star-overlay-right">
+            <div className="star-overlay-panel star-overlay-right" style={{ top: topbarH + 10, bottom: bottombarH + 10 }}>
               <div className="star-panel">
                 <div className="star-panel-title">Log</div>
                 <div className="star-log">
@@ -2424,7 +2910,7 @@ function GameInner() {
             </div>
           ) : null}
           {showChat ? (
-            <div className="star-overlay-panel star-overlay-right">
+            <div className="star-overlay-panel star-overlay-right" style={{ top: topbarH + 10, bottom: bottombarH + 10 }}>
               <div className="star-panel">
                 <div className="star-panel-title">Chat</div>
                 <Chat state={state} />
@@ -2455,7 +2941,14 @@ function GameInner() {
                   })}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                  <button type="button" className="star-btn" onClick={() => navigate('/lobby')}>
+                  <button
+                    type="button"
+                    className="star-btn"
+                    onClick={() => {
+                      if (!window.confirm(t.leaveGameConfirm)) return
+                      navigate('/lobby')
+                    }}
+                  >
                     Spiel beenden
                   </button>
                 </div>
@@ -2486,9 +2979,7 @@ function GameInner() {
         <div className="star-actions">
           <div className="star-zoom">
             <span className="star-zoom-label" aria-label="Zoom">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                <path fill="currentColor" d="M10 2a8 8 0 1 1 5.3 14l4.2 4.2-1.4 1.4-4.2-4.2A8 8 0 0 1 10 2Zm0 2a6 6 0 1 0 0 12a6 6 0 0 0 0-12Zm-1 3h2v2h2v2h-2v2H9v-2H7V9h2V7Z"/>
-              </svg>
+              <span className="material-symbols-rounded" aria-hidden="true">zoom_in</span>
             </span>
             <input
               className="star-zoom-slider"
@@ -2501,9 +2992,7 @@ function GameInner() {
             />
           </div>
           <button type="button" className={`star-btn icon-only ${canRollNow ? 'star-pulse' : ''}`} aria-label="Würfeln" onClick={rollDice} disabled={!canRollNow}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path fill="currentColor" d="M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm1.5 4.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3Zm9 0a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3ZM12 11a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3Zm-4.5 3.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3Zm9 0a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3Z"/>
-            </svg>
+            <span className="material-symbols-rounded" aria-hidden="true">casino</span>
           </button>
           <div className="star-action-group">
             <button
@@ -2518,11 +3007,7 @@ function GameInner() {
               disabled={!isMyTurn || state.phase !== 'main'}
               aria-label={t.build} title={t.build}
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                <path d="m15 12-8.5 8.5c-.83.83-2.17.83-3 0 0 0 0 0 0 0a2.12 2.12 0 0 1 0-3L12 9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M17.64 15 22 10.64" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="m20.91 11.7-1.25-1.25c-.6-.6-.93-1.4-.93-2.25v-.86L16 4.6a2.81 2.81 0 0 0-3.98 0c-.86.86-1.4 2.05-1.4 3.27v.85l-1.25 1.25c-.6.6-1.4.93-2.25.93H6.26l4.6 4.6h.86c.85 0 1.65.33 2.25.93l1.25 1.25" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <span className="material-symbols-rounded" aria-hidden="true">build</span>
             </button>
           </div>
           <div className="star-action-group">
@@ -2538,21 +3023,14 @@ function GameInner() {
               disabled={!isMyTurn || state.status !== 'playing' || state.phase !== 'main'}
               aria-label={t.market} title={t.market}
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                <path fill="currentColor" d="M7 7h5V5H7v2Zm10 0h-3V5h3a2 2 0 0 1 2 2v3h-2V7Zm-2 7h4v2h-4v-2ZM5 14h4v2H5v-2Zm0-4h4v2H5v-2Zm10 0h4v2h-4v-2ZM7 19h5v-2H7v2Zm7 0h3a2 2 0 0 0 2-2v-1h-2v1h-3v2Z"/>
-                <path fill="currentColor" d="M11 12l-2 2l2 2v-1h2v-2h-2v-1Zm2-3l2 2l-2 2v-1h-2V11h2V9Z"/>
-              </svg>
+              <span className="material-symbols-rounded" aria-hidden="true">handshake</span>
             </button>
           </div>
           <button type="button" className={`star-btn icon-only ${openMenu === 'log' ? 'active' : ''}`} aria-label={t.log} title={t.log} onClick={() => setOpenMenu((m) => (m === 'log' ? null : 'log'))}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path fill="currentColor" d="M5 4h14v2H5V4Zm0 5h14v2H5V9Zm0 5h14v2H5v-2Zm0 5h14v2H5v-2Z"/>
-            </svg>
+            <span className="material-symbols-rounded" aria-hidden="true">list_alt</span>
           </button>
           <button type="button" className={`star-btn icon-only ${openMenu === 'chat' ? 'active' : ''}`} aria-label={t.chat} title={t.chat} onClick={() => setOpenMenu((m) => (m === 'chat' ? null : 'chat'))}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path fill="currentColor" d="M4 4h16v12H7l-3 3V4Zm4 5h8v2H8V9Zm0 4h6v2H8v-2Z"/>
-            </svg>
+            <span className="material-symbols-rounded" aria-hidden="true">chat</span>
           </button>
           <button
             type="button"
@@ -2562,20 +3040,13 @@ function GameInner() {
             onClick={() => setIsMuted((v) => !v)}
           >
             {isMuted ? (
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                <path fill="currentColor" d="M16.5 12l3.5 3.5-1.5 1.5L15 13.5 11.5 17H9v-4H6v-2h3V7h2.5L15 10.5l3.5-3.5 1.5 1.5L16.5 12Z"/>
-              </svg>
+              <span className="material-symbols-rounded" aria-hidden="true">volume_off</span>
             ) : (
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-                <path fill="currentColor" d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2a4.5 4.5 0 0 0-2-3.7v7.4a4.5 4.5 0 0 0 2-3.7Zm2.5 0a7 7 0 0 1-3 5.7v-2.4a4.8 4.8 0 0 0 0-6.6V6.3A7 7 0 0 1 19 12Z"/>
-              </svg>
+              <span className="material-symbols-rounded" aria-hidden="true">volume_up</span>
             )}
           </button>
           <button type="button" className="star-btn icon-only" aria-label={t.endTurn} title={t.endTurn} onClick={endTurn} disabled={!isMyTurn || state.status !== 'playing' || state.phase === 'wormhole'}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              <path d="M3 3v5h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+            <span className="material-symbols-rounded" aria-hidden="true">autorenew</span>
           </button>
         </div>
       </div>

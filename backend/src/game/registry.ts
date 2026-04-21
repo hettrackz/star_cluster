@@ -16,7 +16,7 @@ export function createGame(
   creatorId: string,
   creatorName: string,
   avatarUrl?: string,
-  params?: { radius?: number; maxRounds?: number; botCount?: number },
+  params?: { radius?: number; maxRounds?: number; botCount?: number; turnLimitSec?: number },
 ): GameInstance {
   const state = createInitialGame(creatorId, creatorName, avatarUrl, params);
   const instance: GameInstance = { id: state.id, state };

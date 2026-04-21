@@ -87,6 +87,20 @@ export interface GameEvent {
   text: string
 }
 
+export type TradeOfferStatus = 'open' | 'accepted' | 'declined' | 'cancelled' | 'countered' | 'expired'
+
+export interface TradeOffer {
+  id: string
+  fromPlayerId: string
+  toPlayerId: string | null
+  give: Partial<Record<Resource, number>>
+  want: Partial<Record<Resource, number>>
+  status: TradeOfferStatus
+  counterOfId?: string | undefined
+  createdAt: number
+  updatedAt: number
+}
+
 export type TurnPhase = 'await_roll' | 'main' | 'wormhole'
 
 export type SetupRequiredPlacement = 'station' | 'hyperlane'
@@ -113,6 +127,7 @@ export interface GameState {
   round: number
   roundStartedAt: number
   maxRounds: number
+  turnLimitMs: number
   phase: TurnPhase
   setup: SetupState | null
   board: BoardState
@@ -120,6 +135,8 @@ export interface GameState {
   hyperlanes: Hyperlane[]
   warpLanes: WarpLane[]
   blackHoleTileId: TileId
+  blackHolePool: Record<Resource, number>
+  tradeOffers: TradeOffer[]
   lastDiceRoll: DiceRoll | null
   winnerPlayerId: string | null
   chatMessages: ChatMessage[]

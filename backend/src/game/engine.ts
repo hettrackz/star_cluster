@@ -14,6 +14,7 @@ import type {
   SetupState,
   Station,
   TileId,
+  TradeOffer,
   VertexId,
   WarpLane,
   WormholeMove,
@@ -43,11 +44,12 @@ export function createInitialGame(
   creatorId: string,
   creatorName: string,
   avatarUrl?: string,
-  params?: { radius?: number; maxRounds?: number; botCount?: number },
+  params?: { radius?: number; maxRounds?: number; botCount?: number; turnLimitSec?: number },
 ): GameState {
   const radius = Math.min(6, Math.max(2, params?.radius ?? 3));
   const maxRounds = Math.min(50, Math.max(5, params?.maxRounds ?? 50));
   const botCount = Math.min(3, Math.max(0, params?.botCount ?? 0));
+  const turnLimitMs = Math.min(10 * 60 * 1000, Math.max(15 * 1000, Math.floor((params?.turnLimitSec ?? 45) * 1000)));
   const board = createBoard({ radius, size: 56 });
 
   const players: Player[] = [
@@ -86,6 +88,7 @@ export function createInitialGame(
     round: 1,
     roundStartedAt: Date.now(),
     maxRounds,
+    turnLimitMs,
     phase: "await_roll",
     setup: null,
     board,
@@ -93,6 +96,8 @@ export function createInitialGame(
     hyperlanes: [],
     warpLanes: [],
     blackHoleTileId: centerTile,
+    blackHolePool: emptyResources(),
+    tradeOffers: [],
     lastDiceRoll: null,
     winnerPlayerId: null,
     chatMessages: [],
@@ -389,16 +394,18 @@ function maybeBlackHoleSteal(state: GameState): GameState {
   const minTotal = Math.min(...affected.map((p) => sumResources(p.resources)));
   if (minTotal <= 0) return addEvent(state, "Schwarzes Loch: Keine Rohstoffe zum Abziehen.");
 
+  const pool = { ...state.blackHolePool };
   const nextPlayers = state.players.map((p) => {
     if (!affectedPlayerIds.has(p.id)) return p;
     const available = (Object.entries(p.resources) as Array<[Resource, number]>).filter(([, v]) => v > 0);
     if (available.length === 0) return p;
     const [picked] = available[Math.floor(Math.random() * available.length)]!;
+    pool[picked] = (pool[picked] ?? 0) + 1;
     return { ...p, resources: { ...p.resources, [picked]: p.resources[picked] - 1 } };
   });
 
   const names = affected.map((p) => p.name).join(", ");
-  return addEvent({ ...state, players: nextPlayers }, `Schwarzes Loch: 1 Rohstoff von ${names} verschluckt.`);
+  return addEvent({ ...state, players: nextPlayers, blackHolePool: pool }, `Schwarzes Loch: 1 Rohstoff von ${names} verschluckt.`);
 }
 
 export function handleRoll(state: GameState, playerId: string): { state: GameState; requiresWormhole: boolean } {
@@ -628,7 +635,15 @@ export function tradeBlackMarket(
 
   const me = state.players.find((p) => p.id === playerId);
   if (!me) return state;
-  if ((me.resources[params.give] ?? 0) < 4) return state;
+  if ((state.blackHolePool[params.receive] ?? 0) <= 0) return state;
+
+  const rate = getBlackHoleRate(state.blackHolePool, params.receive);
+  if (!rate) return state;
+  if ((me.resources[params.give] ?? 0) < rate) return state;
+
+  const pool = { ...state.blackHolePool };
+  pool[params.receive] = Math.max(0, (pool[params.receive] ?? 0) - 1);
+  pool[params.give] = (pool[params.give] ?? 0) + rate;
 
   const players = state.players.map((p) => {
     if (p.id !== playerId) return p;
@@ -636,12 +651,233 @@ export function tradeBlackMarket(
       ...p,
       resources: {
         ...p.resources,
-        [params.give]: p.resources[params.give] - 4,
+        [params.give]: p.resources[params.give] - rate,
         [params.receive]: p.resources[params.receive] + 1,
       },
     };
   });
-  return addEvent({ ...state, players }, `${me.name} tauscht am Schwarzmarkt: 4 ${params.give} -> 1 ${params.receive}.`);
+  return addEvent(
+    { ...state, players, blackHolePool: pool },
+    `${me.name} handelt mit dem Schwarzen Loch: ${rate} ${params.give} -> 1 ${params.receive}.`,
+  );
+}
+
+function computeBlackHoleRates(pool: Record<Resource, number>) {
+  const available = (Object.keys(pool) as Resource[])
+    .map((r) => ({ r, n: pool[r] ?? 0 }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n || a.r.localeCompare(b.r));
+
+  const result = new Map<Resource, number>();
+  const n = available.length;
+  if (n === 0) return result;
+  if (n === 1) {
+    result.set(available[0]!.r, 2);
+    return result;
+  }
+  if (n === 2) {
+    result.set(available[0]!.r, 2);
+    result.set(available[1]!.r, 4);
+    return result;
+  }
+
+  const topCount = Math.ceil(n / 3);
+  const midCount = Math.ceil((n - topCount) / 2);
+  for (let i = 0; i < n; i++) {
+    const rate = i < topCount ? 2 : i < topCount + midCount ? 3 : 4;
+    result.set(available[i]!.r, rate);
+  }
+  return result;
+}
+
+function getBlackHoleRate(pool: Record<Resource, number>, receive: Resource): number | null {
+  if ((pool[receive] ?? 0) <= 0) return null;
+  return computeBlackHoleRates(pool).get(receive) ?? 4;
+}
+
+function normalizeAmounts(input: Partial<Record<Resource, number>> | undefined): Partial<Record<Resource, number>> {
+  const out: Partial<Record<Resource, number>> = {};
+  if (!input) return out;
+  for (const r of ["metal", "gas", "crystal", "food", "data"] as Resource[]) {
+    const raw = (input as any)[r];
+    if (typeof raw !== "number") continue;
+    const v = Math.floor(raw);
+    if (!Number.isFinite(v) || v <= 0) continue;
+    out[r] = Math.min(20, v);
+  }
+  return out;
+}
+
+function sumAmounts(amounts: Partial<Record<Resource, number>>): number {
+  return (Object.values(amounts) as number[]).reduce((a, b) => a + (b ?? 0), 0);
+}
+
+function canPay(player: Player, cost: Partial<Record<Resource, number>>) {
+  for (const [k, v] of Object.entries(cost) as Array<[Resource, number]>) {
+    if ((player.resources[k] ?? 0) < (v ?? 0)) return false;
+  }
+  return true;
+}
+
+function applyDelta(resources: Record<Resource, number>, delta: Partial<Record<Resource, number>>, sign: 1 | -1) {
+  const next = { ...resources };
+  for (const [k, v] of Object.entries(delta) as Array<[Resource, number]>) {
+    next[k] = (next[k] ?? 0) + sign * (v ?? 0);
+  }
+  return next;
+}
+
+function pruneTradeOffers(tradeOffers: TradeOffer[]) {
+  const keep = tradeOffers.slice(-40);
+  return keep;
+}
+
+export function createTradeOffer(
+  state: GameState,
+  playerId: string,
+  params: { toPlayerId?: string | null; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> },
+): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (!isMyTurn(state, playerId)) return state;
+  if (state.phase !== "main") return state;
+
+  const give = normalizeAmounts(params.give);
+  const want = normalizeAmounts(params.want);
+  if (sumAmounts(give) <= 0 || sumAmounts(want) <= 0) return state;
+
+  const me = state.players.find((p) => p.id === playerId);
+  if (!me) return state;
+  if (!canPay(me, give)) return state;
+
+  const toPlayerId = typeof params.toPlayerId === "string" ? params.toPlayerId : null;
+  if (toPlayerId && !state.players.some((p) => p.id === toPlayerId && p.id !== playerId)) return state;
+
+  const now = Date.now();
+  const offer: TradeOffer = {
+    id: randomUUID(),
+    fromPlayerId: playerId,
+    toPlayerId,
+    give,
+    want,
+    status: "open",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const nextOffers = pruneTradeOffers(state.tradeOffers.concat(offer));
+  return addEvent({ ...state, tradeOffers: nextOffers }, `${me.name} erstellt ein Handelsangebot.`);
+}
+
+export function cancelTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
+  if (idx === -1) return state;
+  const offer = state.tradeOffers[idx]!;
+  if (offer.status !== "open") return state;
+  if (offer.fromPlayerId !== playerId) return state;
+
+  const now = Date.now();
+  const tradeOffers = state.tradeOffers.slice();
+  tradeOffers[idx] = { ...offer, status: "cancelled", updatedAt: now };
+  const me = state.players.find((p) => p.id === playerId);
+  return addEvent({ ...state, tradeOffers }, `${me?.name ?? "Spieler"} zieht ein Handelsangebot zurück.`);
+}
+
+export function declineTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
+  if (idx === -1) return state;
+  const offer = state.tradeOffers[idx]!;
+  if (offer.status !== "open") return state;
+  if (offer.fromPlayerId === playerId) return state;
+  if (offer.toPlayerId && offer.toPlayerId !== playerId) return state;
+
+  const now = Date.now();
+  const tradeOffers = state.tradeOffers.slice();
+  tradeOffers[idx] = { ...offer, status: "declined", updatedAt: now };
+  const me = state.players.find((p) => p.id === playerId);
+  return addEvent({ ...state, tradeOffers }, `${me?.name ?? "Spieler"} lehnt ein Handelsangebot ab.`);
+}
+
+export function acceptTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
+  if (idx === -1) return state;
+  const offer = state.tradeOffers[idx]!;
+  if (offer.status !== "open") return state;
+  if (offer.fromPlayerId === playerId) return state;
+  if (offer.toPlayerId && offer.toPlayerId !== playerId) return state;
+  if (!isMyTurn(state, offer.fromPlayerId)) return state;
+
+  const from = state.players.find((p) => p.id === offer.fromPlayerId);
+  const to = state.players.find((p) => p.id === playerId);
+  if (!from || !to) return state;
+  if (!canPay(from, offer.give)) return state;
+  if (!canPay(to, offer.want)) return state;
+
+  const players = state.players.map((p) => {
+    if (p.id === from.id) {
+      return { ...p, resources: applyDelta(applyDelta(p.resources, offer.give, -1), offer.want, +1) };
+    }
+    if (p.id === to.id) {
+      return { ...p, resources: applyDelta(applyDelta(p.resources, offer.want, -1), offer.give, +1) };
+    }
+    return p;
+  });
+
+  const now = Date.now();
+  const tradeOffers = state.tradeOffers.slice();
+  tradeOffers[idx] = { ...offer, status: "accepted", updatedAt: now };
+  return addEvent({ ...state, players, tradeOffers }, `${to.name} akzeptiert ein Handelsangebot von ${from.name}.`);
+}
+
+export function counterTradeOffer(
+  state: GameState,
+  playerId: string,
+  params: { offerId: string; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> },
+): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
+  if (idx === -1) return state;
+  const original = state.tradeOffers[idx]!;
+  if (original.status !== "open") return state;
+  if (original.fromPlayerId === playerId) return state;
+  if (original.toPlayerId && original.toPlayerId !== playerId) return state;
+  if (!isMyTurn(state, original.fromPlayerId)) return state;
+
+  const give = normalizeAmounts(params.give);
+  const want = normalizeAmounts(params.want);
+  if (sumAmounts(give) <= 0 || sumAmounts(want) <= 0) return state;
+
+  const me = state.players.find((p) => p.id === playerId);
+  if (!me) return state;
+  if (!canPay(me, give)) return state;
+
+  const now = Date.now();
+  const offer: TradeOffer = {
+    id: randomUUID(),
+    fromPlayerId: playerId,
+    toPlayerId: original.fromPlayerId,
+    give,
+    want,
+    status: "open",
+    counterOfId: original.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const tradeOffers = state.tradeOffers.slice();
+  tradeOffers[idx] = { ...original, status: "countered", updatedAt: now };
+  const nextOffers = pruneTradeOffers(tradeOffers.concat(offer));
+  return addEvent({ ...state, tradeOffers: nextOffers }, `${me.name} macht einen Gegenvorschlag.`);
 }
 
 function finishIfNeeded(state: GameState): GameState {
@@ -666,6 +902,8 @@ export function endTurn(state: GameState, playerId: string): GameState {
 
   const nextPlayerIndex = (state.currentPlayerIndex + 1) % state.players.length;
   const roundEnded = nextPlayerIndex === 0;
+  const now = Date.now();
+  const tradeOffers = state.tradeOffers.map((o) => (o.status === "open" ? { ...o, status: "expired" as const, updatedAt: now } : o));
 
   let next: GameState = {
     ...state,
@@ -674,6 +912,7 @@ export function endTurn(state: GameState, playerId: string): GameState {
     lastDiceRoll: null,
     roundStartedAt: roundEnded ? Date.now() : state.roundStartedAt,
     turnStartedAt: Date.now(),
+    tradeOffers,
   };
 
   if (roundEnded) {
@@ -922,10 +1161,13 @@ export function botAct(state: GameState): GameState {
         if (need <= 0) continue;
         if ((me.resources[w.receive] ?? 0) >= need) continue;
 
+        const rate = getBlackHoleRate(next.blackHolePool, w.receive);
+        if (!rate) continue;
         const give = (Object.keys(me.resources) as Resource[])
           .filter((r) => r !== w.receive)
+          .filter((r) => (me.resources[r] ?? 0) >= rate)
           .sort((a, b) => (me.resources[b] ?? 0) - (me.resources[a] ?? 0))[0];
-        if (give && (me.resources[give] ?? 0) >= 4) {
+        if (give) {
           const attempt = tradeBlackMarket(next, p.id, { give, receive: w.receive });
           if (attempt !== next) return attempt;
         }

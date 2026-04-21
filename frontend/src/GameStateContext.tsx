@@ -23,6 +23,11 @@ interface GameContextValue {
   buildWarpLane: (params: { fromVertexId: VertexId; toVertexId: VertexId }) => void
   endTurn: () => void
   tradeBlackMarket: (params: { give: Resource; receive: Resource }) => void
+  createTradeOffer: (params: { toPlayerId?: string | null; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => void
+  cancelTradeOffer: (params: { offerId: string }) => void
+  declineTradeOffer: (params: { offerId: string }) => void
+  acceptTradeOffer: (params: { offerId: string }) => void
+  counterTradeOffer: (params: { offerId: string; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => void
   sendChatMessage: (text: string) => void
 }
 
@@ -126,6 +131,26 @@ export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, chi
       tradeBlackMarket: (params: { give: Resource; receive: Resource }) => {
         if (!socket) return
         socket.emit('black_market_trade', { gameId, ...params })
+      },
+      createTradeOffer: (params: { toPlayerId?: string | null; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => {
+        if (!socket) return
+        socket.emit('trade_offer_create', { gameId, ...params })
+      },
+      cancelTradeOffer: (params: { offerId: string }) => {
+        if (!socket) return
+        socket.emit('trade_offer_cancel', { gameId, ...params })
+      },
+      declineTradeOffer: (params: { offerId: string }) => {
+        if (!socket) return
+        socket.emit('trade_offer_decline', { gameId, ...params })
+      },
+      acceptTradeOffer: (params: { offerId: string }) => {
+        if (!socket) return
+        socket.emit('trade_offer_accept', { gameId, ...params })
+      },
+      counterTradeOffer: (params: { offerId: string; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => {
+        if (!socket) return
+        socket.emit('trade_offer_counter', { gameId, ...params })
       },
       sendChatMessage: (text: string) => {
         if (!socket) return

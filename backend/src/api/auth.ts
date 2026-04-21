@@ -22,9 +22,15 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { sendEmailVerificationEmail, sendPasswordResetEmail, verifySmtpConnection } from "../auth/email";
 
+function sanitizeConfiguredBaseUrl(value: string) {
+  const trimmed = value.trim();
+  const unquoted = trimmed.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+  return unquoted.replace(/\/+$/, "");
+}
+
 function getAppBaseUrl(req: { protocol?: string; get: (name: string) => string | undefined }) {
   const configured = process.env.APP_BASE_URL;
-  if (configured) return configured.replace(/\/+$/, "");
+  if (configured) return sanitizeConfiguredBaseUrl(configured);
   const forwardedProto = req.get("x-forwarded-proto")?.split(",")[0]?.trim();
   const forwardedHost = req.get("x-forwarded-host")?.split(",")[0]?.trim();
   const host = forwardedHost ?? req.get("host") ?? "";

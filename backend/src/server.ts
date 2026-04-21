@@ -8,11 +8,11 @@ import { registerGameRoutes } from "./api/games";
 import { registerAuthRoutes } from "./api/auth";
 import { registerFriendRoutes } from "./api/friends";
 import { getGame, getAllGames, updateGameState, removeGame } from "./game/registry";
-import { botAct, buildHyperlane, buildStation, buildWarpLane, endTurn, handleRoll, resolveWormhole, startGame, tradeBlackMarket, upgradeToStarbase } from "./game/engine";
+import { acceptTradeOffer, botAct, buildHyperlane, buildStation, buildWarpLane, cancelTradeOffer, counterTradeOffer, createTradeOffer, declineTradeOffer, endTurn, handleRoll, resolveWormhole, startGame, tradeBlackMarket, upgradeToStarbase } from "./game/engine";
 import type { ChatMessage, DiceRoll, GameState, Player, PlayerColor, Resource, TileId } from "./game/types";
 import { randomUUID } from "node:crypto";
 import { verifyUserToken } from "./auth/jwt";
-import { getUserById } from "./auth/store";
+import { checkMongoConnection, getUserById } from "./auth/store";
 
 import path from "path";
 
@@ -45,6 +45,12 @@ const allowedOrigins = new Set<string>([
   "http://localhost:5174",
 ]);
 
+function sanitizeConfiguredBaseUrl(value: string) {
+  const trimmed = value.trim();
+  const unquoted = trimmed.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+  return unquoted.replace(/\/+$/, "");
+}
+
 const app = express();
 
 app.use(
@@ -69,7 +75,10 @@ registerGameRoutes(apiRouter);
 registerFriendRoutes(apiRouter);
 app.use("/api", apiRouter);
 
-app.get("/health", (_req, res) => {
+app.get("/health", async (_req, res) => {
+  const mongoConfigured = Boolean(process.env.MONGODB_URI);
+  const mongo = mongoConfigured ? await checkMongoConnection() : { ok: false, dbName: null, error: null as string | null };
+  const appBaseUrl = process.env.APP_BASE_URL ? sanitizeConfiguredBaseUrl(process.env.APP_BASE_URL) : null;
   res.json({
     status: "ok",
     commit:
@@ -81,6 +90,9 @@ app.get("/health", (_req, res) => {
       process.env.RAILWAY_DEPLOYMENT_CREATED_AT ??
       process.env.RAILWAY_DEPLOYMENT_ID ??
       null,
+    mongoConfigured,
+    mongoOk: mongoConfigured ? mongo.ok : null,
+    mongoDb: mongoConfigured ? mongo.dbName : null,
     smtpConfigured: Boolean(
       process.env.SMTP_HOST &&
         process.env.SMTP_PORT &&
@@ -90,7 +102,7 @@ app.get("/health", (_req, res) => {
     ),
     emailTransport: process.env.EMAIL_TRANSPORT ?? null,
     resendConfigured: Boolean(process.env.RESEND_API_KEY && (process.env.EMAIL_FROM ?? process.env.SMTP_FROM)),
-    appBaseUrl: process.env.APP_BASE_URL ?? null,
+    appBaseUrl,
   });
 });
 
@@ -505,6 +517,77 @@ io.on("connection", (socket) => {
     io.to(gameId).emit("game_state", { state: newState });
     runBotsUntilHuman(gameId, newState);
   });
+
+  socket.on(
+    "trade_offer_create",
+    (payload: { gameId: string; toPlayerId?: string | null; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => {
+      const { gameId, toPlayerId, give, want } = payload;
+      const game = getGame(gameId);
+      if (!game) return;
+      const meta = socketMeta.get(socket.id);
+      if (!meta?.playerId || meta.gameId !== gameId) return;
+      markHumanActivity(gameId);
+      const newState = createTradeOffer(game.state, meta.playerId, { toPlayerId: toPlayerId ?? null, give, want });
+      updateGameState(gameId, newState);
+      io.to(gameId).emit("game_state", { state: newState });
+      runBotsUntilHuman(gameId, newState);
+    },
+  );
+
+  socket.on("trade_offer_cancel", (payload: { gameId: string; offerId: string }) => {
+    const { gameId, offerId } = payload;
+    const game = getGame(gameId);
+    if (!game) return;
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) return;
+    markHumanActivity(gameId);
+    const newState = cancelTradeOffer(game.state, meta.playerId, { offerId });
+    updateGameState(gameId, newState);
+    io.to(gameId).emit("game_state", { state: newState });
+    runBotsUntilHuman(gameId, newState);
+  });
+
+  socket.on("trade_offer_decline", (payload: { gameId: string; offerId: string }) => {
+    const { gameId, offerId } = payload;
+    const game = getGame(gameId);
+    if (!game) return;
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) return;
+    markHumanActivity(gameId);
+    const newState = declineTradeOffer(game.state, meta.playerId, { offerId });
+    updateGameState(gameId, newState);
+    io.to(gameId).emit("game_state", { state: newState });
+    runBotsUntilHuman(gameId, newState);
+  });
+
+  socket.on("trade_offer_accept", (payload: { gameId: string; offerId: string }) => {
+    const { gameId, offerId } = payload;
+    const game = getGame(gameId);
+    if (!game) return;
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) return;
+    markHumanActivity(gameId);
+    const newState = acceptTradeOffer(game.state, meta.playerId, { offerId });
+    updateGameState(gameId, newState);
+    io.to(gameId).emit("game_state", { state: newState });
+    runBotsUntilHuman(gameId, newState);
+  });
+
+  socket.on(
+    "trade_offer_counter",
+    (payload: { gameId: string; offerId: string; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> }) => {
+      const { gameId, offerId, give, want } = payload;
+      const game = getGame(gameId);
+      if (!game) return;
+      const meta = socketMeta.get(socket.id);
+      if (!meta?.playerId || meta.gameId !== gameId) return;
+      markHumanActivity(gameId);
+      const newState = counterTradeOffer(game.state, meta.playerId, { offerId, give, want });
+      updateGameState(gameId, newState);
+      io.to(gameId).emit("game_state", { state: newState });
+      runBotsUntilHuman(gameId, newState);
+    },
+  );
 
   socket.on("send_chat_message", (payload: { gameId: string; text: string }) => {
     const { gameId, text } = payload;

@@ -5,11 +5,19 @@ import { MongoClient } from "mongodb";
 
 let mongoClient: MongoClient | null = null;
 
+function getMongoClientOptions() {
+  const serverSelectionTimeoutMSRaw = process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS;
+  const serverSelectionTimeoutMS = serverSelectionTimeoutMSRaw ? Number(serverSelectionTimeoutMSRaw) : 5000;
+  return {
+    serverSelectionTimeoutMS: Number.isFinite(serverSelectionTimeoutMS) ? serverSelectionTimeoutMS : 5000,
+  };
+}
+
 async function getMongoClient(): Promise<MongoClient | null> {
   const uri = process.env.MONGODB_URI;
   if (!uri) return null;
   if (mongoClient) return mongoClient;
-  mongoClient = new MongoClient(uri);
+  mongoClient = new MongoClient(uri, getMongoClientOptions());
   await mongoClient.connect();
   return mongoClient;
 }
@@ -19,6 +27,21 @@ async function getMongoDb() {
   if (!client) return null;
   const dbName = process.env.MONGODB_DB ?? "star_cluster";
   return client.db(dbName);
+}
+
+export async function checkMongoConnection(): Promise<{ ok: boolean; dbName: string | null; error: string | null }> {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) return { ok: false, dbName: null, error: "MONGODB_URI not set" };
+  const dbName = process.env.MONGODB_DB ?? "star_cluster";
+  try {
+    const client = await getMongoClient();
+    if (!client) return { ok: false, dbName: null, error: "MONGODB_URI not set" };
+    await client.db(dbName).command({ ping: 1 });
+    return { ok: true, dbName, error: null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, dbName, error: msg };
+  }
 }
 
 export type User = {

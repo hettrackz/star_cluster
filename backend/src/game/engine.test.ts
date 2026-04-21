@@ -26,12 +26,13 @@ describe("Star Cluster Engine", () => {
     expect(game.setup?.required).toBe("station");
     expect(game.currentPlayerIndex).toBe(0);
 
+    const currentPlayerId = game.players[game.currentPlayerIndex]!.id;
     const v = game.board.vertices[0]!.id;
-    game = buildStation(game, "p1", v);
+    game = buildStation(game, currentPlayerId, v);
     expect(game.setup?.required).toBe("hyperlane");
 
     const e = game.board.edges.find((ed) => ed.a === v || ed.b === v)!.id;
-    game = buildHyperlane(game, "p1", e);
+    game = buildHyperlane(game, currentPlayerId, e);
 
     expect(game.status).toBe("setup_phase_1");
     expect(game.currentPlayerIndex).toBe(1);

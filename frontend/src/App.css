@@ -2099,6 +2099,22 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.star-topbar-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.star-topbar-logo {
+  width: clamp(56px, 7vw, 96px);
+  height: clamp(56px, 7vw, 96px);
+  border-radius: 16px;
+  object-fit: contain;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 10px 26px rgba(0,0,0,0.55));
+}
+
 .star-topbar-center {
   flex: 1 1 auto;
   min-width: 0;
@@ -2450,6 +2466,11 @@ button:disabled {
   z-index: 6;
 }
 
+.star-overlay-panel.star-overlay-market {
+  width: min(680px, 96%);
+  z-index: 8;
+}
+
 .star-overlay-panel .star-panel {
   height: 100%;
 }
@@ -2548,6 +2569,12 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.star-panel.star-market-panel {
+  background: rgba(2, 6, 23, 0.88);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px rgba(0,0,0,0.55);
 }
 
 .star-panel-title {
@@ -2812,6 +2839,30 @@ button:disabled {
   display: block;
 }
 
+.star-btn.icon-only .material-symbols-rounded {
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.star-topbar-close .material-symbols-rounded {
+  display: block;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.star-zoom-label .material-symbols-rounded {
+  display: inline-block;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.star-hex-symbol .material-symbols-rounded {
+  display: block;
+  font-size: 26px;
+  line-height: 1;
+}
+
 .star-pulse {
   animation: star-pulse 1200ms ease-in-out infinite;
 }
@@ -2919,9 +2970,11 @@ button:disabled {
   position: absolute;
   top: 4px;
   right: 4px;
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   opacity: 0.7;
+  display: grid;
+  place-items: center;
 }
 
 .star-build-grip circle {
@@ -3031,8 +3084,8 @@ button:disabled {
 }
 
 .star-market-icon {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
 }
 
 .star-market-row select {
@@ -3041,4 +3094,242 @@ button:disabled {
   border: 1px solid rgba(255,255,255,0.2);
   border-radius: 8px;
   padding: 4px 8px;
+}
+
+.star-panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.star-market-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+
+.star-market-body {
+  padding: 10px 12px;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.star-market-section-title {
+  font-weight: 900;
+  opacity: 0.9;
+  font-size: 0.9rem;
+}
+
+.star-market-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.star-market-chip {
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(15, 23, 42, 0.78);
+  border-radius: 14px;
+  padding: 8px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.star-market-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.star-market-chip.selected {
+  border-color: rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.14);
+}
+
+.star-market-chip-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-weight: 900;
+  font-size: 0.82rem;
+  text-align: center;
+  color: #fff;
+}
+
+.star-market-chip-sub {
+  opacity: 0.75;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.star-market-stepper-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.star-market-stepper {
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(15, 23, 42, 0.78);
+  border-radius: 14px;
+  padding: 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.star-market-stepper-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-weight: 900;
+  font-size: 0.82rem;
+  text-align: center;
+  color: #fff;
+}
+
+.star-market-stepper-controls {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.star-market-stepper-btn {
+  width: 36px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(2, 6, 23, 0.7);
+  color: #e2e8f0;
+  font-weight: 900;
+  cursor: pointer;
+  touch-action: manipulation;
+  display: grid;
+  place-items: center;
+}
+
+.star-market-stepper-btn .material-symbols-rounded {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.star-market-stepper-btn:disabled {
+  opacity: 0.45;
+}
+
+.star-market-stepper-count {
+  min-width: 34px;
+  text-align: center;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+}
+
+.star-trade-offer {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(2, 6, 23, 0.75);
+  border-radius: 14px;
+  padding: 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.star-market-player-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px;
+  min-width: 92px;
+}
+
+.star-market-player-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(15, 23, 42, 0.65);
+  overflow: hidden;
+}
+
+.star-market-player-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.star-market-player-avatar-fallback {
+  width: 100%;
+  height: 100%;
+}
+
+.star-market-player-name {
+  font-weight: 900;
+  font-size: 0.82rem;
+  text-align: center;
+  max-width: 120px;
+  line-height: 1.05;
+}
+
+.star-trade-offer-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 900;
+  font-size: 0.9rem;
+}
+
+.star-trade-offer-amounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  opacity: 0.9;
+  font-size: 0.85rem;
+}
+
+.star-trade-offer-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(15, 23, 42, 0.78);
+  font-variant-numeric: tabular-nums;
+}
+
+.star-trade-offer-pill-label {
+  font-weight: 900;
+  font-size: 0.78rem;
+  opacity: 0.92;
+  line-height: 1.05;
+  text-align: center;
+  color: #fff;
+}
+
+.star-trade-offer-pill-count {
+  font-weight: 900;
+  font-size: 0.86rem;
+}
+
+.star-trade-offer-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
