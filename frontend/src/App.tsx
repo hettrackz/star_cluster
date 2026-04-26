@@ -6,6 +6,7 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage'
 import { VerifyEmailPage } from './pages/VerifyEmailPage'
 import { LobbyPage } from './pages/LobbyPage'
 import { GamePage } from './pages/GamePage'
+import { WaitingRoomPage } from './pages/WaitingRoomPage'
 import './App.css'
 import { useEffect, useState } from 'react'
 import { useI18n } from './I18nContext'
@@ -13,7 +14,7 @@ import { Icon } from './components/Icon'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { token, isReady } = useAuth()
-  if (!isReady) return null
+  if (!isReady) return <div className="page"><div className="loading">Lädt…</div></div>
   if (!token) return <Navigate to="/auth" replace />
   return <>{children}</>
 }
@@ -65,6 +66,14 @@ function App() {
           element={
             <Protected>
               <GamePage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/waiting/:gameId"
+          element={
+            <Protected>
+              <WaitingRoomPage />
             </Protected>
           }
         />

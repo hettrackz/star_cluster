@@ -11,10 +11,14 @@ export type LastDiceEvent = {
 
 interface GameContextValue {
   socket: Socket | null
+  isConnected: boolean
   state: GameState | null
   lastError: string | null
   lastDiceEvent: LastDiceEvent | null
   startGame: () => void
+  setReady: (ready: boolean) => void
+  addBot: () => void
+  removeBot: () => void
   rollDice: () => void
   resolveWormhole: (params: { newBlackHoleTileId: TileId }) => void
   buildStation: (vertexId: string) => void
@@ -44,6 +48,7 @@ interface Props {
 export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, children }: Props) {
   const { backendUrl, token } = useAuth()
   const [socket, setSocket] = useState<Socket | null>(null)
+  const [isConnected, setIsConnected] = useState(false)
   const [state, setState] = useState<GameState | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
   const [lastDiceEvent, setLastDiceEvent] = useState<LastDiceEvent | null>(null)
@@ -55,8 +60,13 @@ export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, chi
     })
 
     s.on('connect', () => {
+      setIsConnected(true)
       if (!token) return
       s.emit('join_game', { gameId, token, avatarUrl })
+    })
+
+    s.on('disconnect', () => {
+      setIsConnected(false)
     })
 
     s.on('game_state', (payload: { state: GameState }) => {
@@ -93,12 +103,49 @@ export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, chi
   const value: GameContextValue = useMemo(
     () => ({
       socket,
+      isConnected,
       state,
       lastError,
       lastDiceEvent,
       startGame: () => {
-        if (!socket) return
-        socket.emit('start_game', { gameId })
+        if (!socket || !socket.connected) {
+          setLastError('Nicht verbunden.')
+          return
+        }
+        socket.timeout(1500).emit('start_game', { gameId }, (err: unknown, res?: { ok: boolean; message?: string }) => {
+          if (err) setLastError('Keine Antwort vom Server.')
+          else if (res && res.ok === false && res.message) setLastError(res.message)
+        })
+      },
+      setReady: (ready: boolean) => {
+        if (!socket || !socket.connected) {
+          setLastError('Nicht verbunden.')
+          return
+        }
+        socket.timeout(1500).emit('player_ready_set', { gameId, ready }, (err: unknown, res?: { ok: boolean; message?: string }) => {
+          if (err) setLastError('Keine Antwort vom Server.')
+          else if (res && res.ok === false && res.message) setLastError(res.message)
+        })
+      },
+      addBot: () => {
+        if (!socket || !socket.connected) {
+          setLastError('Nicht verbunden.')
+          return
+        }
+        socket.timeout(1500).emit('lobby_add_bot', { gameId }, (err: unknown, res?: { ok: boolean; message?: string }) => {
+          if (err) setLastError('Keine Antwort vom Server.')
+          else if (res && res.ok === false && res.message) setLastError(res.message)
+        })
+      },
+      removeBot: () => {
+        if (!socket || !socket.connected) {
+          setLastError('Nicht verbunden.')
+          return
+        }
+        socket.timeout(1500).emit('lobby_remove_bot', { gameId }, (err: unknown, res?: { ok: boolean; message?: string }) => {
+          if (err) setLastError('Keine Antwort vom Server.')
+          else if (res && res.ok === false && res.message) setLastError(res.message)
+        })
       },
       rollDice: () => {
         if (!socket) return
@@ -157,7 +204,7 @@ export function GameStateProvider({ gameId, playerId, playerName, avatarUrl, chi
         socket.emit('send_chat_message', { gameId, text })
       },
     }),
-    [socket, state, lastError, lastDiceEvent, gameId],
+    [socket, isConnected, state, lastError, lastDiceEvent, gameId],
   )
 
   return <GameStateContext.Provider value={value}>{children}</GameStateContext.Provider>

@@ -27,10 +27,14 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 const STORAGE_KEY = 'star_cluster_auth_token'
 
 function getBackendUrl() {
-  return (
-    import.meta.env.VITE_BACKEND_URL ||
-    (import.meta.env.DEV ? 'http://localhost:4000' : window.location.origin)
-  )
+  const configured = import.meta.env.VITE_BACKEND_URL
+  if (configured) return String(configured)
+
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  if (isLocalhost) return 'http://localhost:4000'
+
+  if (import.meta.env.DEV) return 'http://localhost:4000'
+  return window.location.origin
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {

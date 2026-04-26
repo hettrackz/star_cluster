@@ -6,18 +6,7 @@ const SQRT3 = Math.sqrt(3);
 
 const BIOMES: Exclude<Biome, "singularity">[] = ["nebula", "asteroid", "frozen", "farm", "ruins"];
 
-const DICE_SUM_WEIGHTS: Array<{ sum: number; weight: number }> = [
-  { sum: 2, weight: 1 },
-  { sum: 3, weight: 2 },
-  { sum: 4, weight: 3 },
-  { sum: 5, weight: 4 },
-  { sum: 6, weight: 5 },
-  { sum: 8, weight: 5 },
-  { sum: 9, weight: 4 },
-  { sum: 10, weight: 3 },
-  { sum: 11, weight: 2 },
-  { sum: 12, weight: 1 },
-];
+const DICE_SUMS: number[] = [2, 3, 4, 5, 6, 8, 9, 10, 11, 12];
 
 function shuffle<T>(arr: T[]) {
   const a = arr.slice();
@@ -66,14 +55,20 @@ function hexCorner(center: { x: number; y: number }, size: number, i: number) {
   };
 }
 
-function weightedDiceNumber(): number {
-  const total = DICE_SUM_WEIGHTS.reduce((a, b) => a + b.weight, 0);
-  let r = Math.random() * total;
-  for (const e of DICE_SUM_WEIGHTS) {
-    r -= e.weight;
-    if (r <= 0) return e.sum;
+function balancedDiceNumbersPool(count: number): number[] {
+  if (count <= 0) return [];
+  const base = Math.floor(count / DICE_SUMS.length);
+  const rem = count % DICE_SUMS.length;
+  const pool: number[] = [];
+
+  for (const sum of DICE_SUMS) {
+    for (let i = 0; i < base; i++) pool.push(sum);
   }
-  return DICE_SUM_WEIGHTS[DICE_SUM_WEIGHTS.length - 1]!.sum;
+
+  const extraOrder = shuffle(DICE_SUMS);
+  for (let i = 0; i < rem; i++) pool.push(extraOrder[i]!);
+
+  return shuffle(pool);
 }
 
 export function createBoard(params: { radius: number; size: number }): BoardState {
@@ -92,7 +87,7 @@ export function createBoard(params: { radius: number; size: number }): BoardStat
   const biomePool = shuffle(
     Array.from({ length: nonCenter.length }, (_, i) => BIOMES[i % BIOMES.length]!),
   );
-  const numbersPool = shuffle(Array.from({ length: nonCenter.length }, () => weightedDiceNumber()));
+  const numbersPool = balancedDiceNumbersPool(nonCenter.length);
 
   const verticesById = new Map<VertexId, BoardVertex>();
   const edgesById = new Map<EdgeId, BoardEdge>();

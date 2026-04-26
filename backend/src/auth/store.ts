@@ -79,12 +79,11 @@ type AuthDb = {
   passwordResetTokens: PasswordResetToken[];
 };
 
-const DEFAULT_DB_RELATIVE_PATH = path.join("backend", "data", "auth.json");
-
 function getDbPath() {
-  return process.env.AUTH_DB_PATH
-    ? path.resolve(process.env.AUTH_DB_PATH)
-    : path.resolve(process.cwd(), DEFAULT_DB_RELATIVE_PATH);
+  if (process.env.AUTH_DB_PATH) return path.resolve(process.env.AUTH_DB_PATH);
+  const cwd = process.cwd();
+  if (path.basename(cwd) === "backend") return path.resolve(cwd, "data", "auth.json");
+  return path.resolve(cwd, "backend", "data", "auth.json");
 }
 
 async function ensureDbFile() {

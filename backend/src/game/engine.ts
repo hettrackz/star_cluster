@@ -21,6 +21,8 @@ import type {
 } from "./types";
 
 const playerColors: PlayerColor[] = ["red", "blue", "green", "yellow"];
+const MAX_TRADE_OFFERS_PER_ROUND = 10;
+const TRADE_OFFER_TIMEOUT_MS = 20_000;
 
 function clampInt(value: number, min: number, max: number) {
   const n = Math.floor(value);
@@ -45,6 +47,7 @@ function addBotsUpToMax(state: GameState, maxBots: number): GameState {
       color,
       avatarUrl: undefined,
       isBot: true,
+      isReady: true,
       score: 0,
       resources: emptyResources(),
     });
@@ -62,7 +65,11 @@ function sumResources(r: Record<Resource, number>) {
 }
 
 function addEvent(state: GameState, text: string): GameState {
-  const ev: GameEvent = { id: randomUUID(), timestamp: Date.now(), text };
+  const now = Date.now();
+  const last = state.events[state.events.length - 1] ?? null;
+  if (last && last.text === text && now - last.timestamp < 1200) return state;
+
+  const ev: GameEvent = { id: randomUUID(), timestamp: now, text };
   const next = state.events.concat(ev);
   return { ...state, events: next.length > 80 ? next.slice(next.length - 80) : next };
 }
@@ -78,9 +85,9 @@ export function createInitialGame(
   params?: { radius?: number; maxRounds?: number; botCount?: number; turnLimitSec?: number },
 ): GameState {
   const radius = Math.min(6, Math.max(2, params?.radius ?? 3));
-  const maxRounds = Math.min(50, Math.max(5, params?.maxRounds ?? 50));
+  const maxRounds = Math.min(50, Math.max(5, params?.maxRounds ?? 30));
   const maxBots = clampInt(params?.botCount ?? 0, 0, 3);
-  const turnLimitMs = Math.min(10 * 60 * 1000, Math.max(15 * 1000, Math.floor((params?.turnLimitSec ?? 45) * 1000)));
+  const turnLimitMs = Math.min(10 * 60 * 1000, Math.max(15 * 1000, Math.floor((params?.turnLimitSec ?? 300) * 1000)));
   const board = createBoard({ radius, size: 56 });
 
   const players: Player[] = [
@@ -90,6 +97,7 @@ export function createInitialGame(
       color: playerColors[0]!,
       avatarUrl: avatarUrl,
       isBot: false,
+      isReady: false,
       score: 0,
       resources: emptyResources(),
     },
@@ -117,6 +125,7 @@ export function createInitialGame(
     blackHoleTileId: centerTile,
     blackHolePool: emptyResources(),
     tradeOffers: [],
+    tradeOffersThisRound: {},
     lastDiceRoll: null,
     winnerPlayerId: null,
     chatMessages: [],
@@ -142,16 +151,15 @@ function createSetupState(state: GameState, step: 1 | 2): SetupState {
 
 export function startGame(state: GameState): GameState {
   if (state.status !== "lobby") return state;
-  const withBots = addBotsUpToMax(state, state.maxBots);
-  if (withBots.players.length < 2) return state;
-  const shuffledPlayers = withBots.players.slice();
+  if (state.players.length < 2) return state;
+  const shuffledPlayers = state.players.slice();
   for (let i = shuffledPlayers.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     const tmp = shuffledPlayers[i]!;
     shuffledPlayers[i] = shuffledPlayers[j]!;
     shuffledPlayers[j] = tmp;
   }
-  const withPlayers: GameState = { ...withBots, players: shuffledPlayers };
+  const withPlayers: GameState = { ...state, players: shuffledPlayers };
   const next: GameState = {
     ...withPlayers,
     status: "setup_phase_1",
@@ -164,6 +172,42 @@ export function startGame(state: GameState): GameState {
   };
   const starter = next.players[0]?.name ?? "—";
   return addEvent(next, `Spiel startet. Startspieler: ${starter}. Setup Phase 1: Jeder platziert 1 Station + 1 Hyperlane (1→N).`);
+}
+
+export function autoCompleteSetup(state: GameState): GameState {
+  let next = state;
+  let guard = 0;
+  while (isSetupStatus(next.status) && next.setup && guard < 10_000) {
+    guard++;
+    const pid = next.players[next.currentPlayerIndex]?.id;
+    if (!pid) break;
+
+    if (next.setup.required === "station") {
+      let progressed = false;
+      for (const v of next.board.vertices) {
+        const attempt = buildStation(next, pid, v.id);
+        if (attempt !== next) {
+          next = attempt;
+          progressed = true;
+          break;
+        }
+      }
+      if (!progressed) break;
+      continue;
+    }
+
+    let progressed = false;
+    for (const e of next.board.edges) {
+      const attempt = buildHyperlane(next, pid, e.id);
+      if (attempt !== next) {
+        next = attempt;
+        progressed = true;
+        break;
+      }
+    }
+    if (!progressed) break;
+  }
+  return next;
 }
 
 function currentPlayer(state: GameState) {
@@ -676,9 +720,12 @@ export function tradeBlackMarket(
       },
     };
   });
+
+  const label = (r: Resource) =>
+    r === "metal" ? "Metall" : r === "gas" ? "Gas" : r === "crystal" ? "Kristall" : r === "food" ? "Nahrung" : "Daten";
   return addEvent(
     { ...state, players, blackHolePool: pool },
-    `${me.name} handelt mit dem Schwarzen Loch: ${rate} ${params.give} -> 1 ${params.receive}.`,
+    `${me.name} handelt mit dem Schwarzen Loch: ${rate} ${label(params.give)} -> 1 ${label(params.receive)}.`,
   );
 }
 
@@ -752,6 +799,55 @@ function pruneTradeOffers(tradeOffers: TradeOffer[]) {
   return keep;
 }
 
+export function expireTradeOffers(state: GameState, now: number = Date.now()): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const expired: TradeOffer[] = [];
+  const expiredCountByFromId: Record<string, number> = {};
+  const tradeOffers = state.tradeOffers.map((o) => {
+    if (o.status !== "open") return o;
+    if (now - o.createdAt < TRADE_OFFER_TIMEOUT_MS) return o;
+    expired.push(o);
+    expiredCountByFromId[o.fromPlayerId] = (expiredCountByFromId[o.fromPlayerId] ?? 0) + 1;
+    return { ...o, status: "expired" as const, updatedAt: now };
+  });
+
+  if (!expired.length) return state;
+
+  let tradeOffersThisRound = state.tradeOffersThisRound;
+  for (const [fromId, n] of Object.entries(expiredCountByFromId)) {
+    tradeOffersThisRound = decTradeOfferCountThisRound(tradeOffersThisRound, fromId, n);
+  }
+
+  let next: GameState = { ...state, tradeOffers, tradeOffersThisRound };
+  for (const o of expired) {
+    const from = next.players.find((p) => p.id === o.fromPlayerId) ?? null;
+    next = addEvent(next, `${from?.name ?? "Spieler"}: Handelsangebot abgelehnt (Zeitlimit 20s).`);
+  }
+  return next;
+}
+
+function tradeOfferCountThisRound(state: GameState, playerId: string) {
+  return state.tradeOffersThisRound[playerId] ?? 0;
+}
+
+function incTradeOfferCountThisRound(state: GameState, playerId: string) {
+  return {
+    ...state.tradeOffersThisRound,
+    [playerId]: tradeOfferCountThisRound(state, playerId) + 1,
+  };
+}
+
+function decTradeOfferCountThisRound(tradeOffersThisRound: Record<string, number>, playerId: string, by: number = 1) {
+  const current = tradeOffersThisRound[playerId] ?? 0;
+  const nextCount = Math.max(0, current - by);
+  const next = { ...tradeOffersThisRound };
+  if (nextCount <= 0) delete next[playerId];
+  else next[playerId] = nextCount;
+  return next;
+}
+
 export function createTradeOffer(
   state: GameState,
   playerId: string,
@@ -767,10 +863,25 @@ export function createTradeOffer(
 
   const me = state.players.find((p) => p.id === playerId);
   if (!me) return state;
+  if (state.tradeOffers.some((o) => o.status === "open" && o.fromPlayerId === playerId)) return state;
+  if (tradeOfferCountThisRound(state, playerId) >= MAX_TRADE_OFFERS_PER_ROUND) {
+    return addEvent(state, `${me.name} hat diese Runde bereits ${MAX_TRADE_OFFERS_PER_ROUND} Handelsangebote erstellt.`);
+  }
   if (!canPay(me, give)) return state;
 
   const toPlayerId = typeof params.toPlayerId === "string" ? params.toPlayerId : null;
   if (toPlayerId && !state.players.some((p) => p.id === toPlayerId && p.id !== playerId)) return state;
+
+  const candidates = state.players
+    .filter((p) => p.id !== playerId)
+    .filter((p) => (toPlayerId ? p.id === toPlayerId : true));
+  const anyCanPayWant = candidates.some((p) => canPay(p, want));
+  if (!anyCanPayWant) {
+    return addEvent(
+      { ...state, tradeOffersThisRound: incTradeOfferCountThisRound(state, playerId) },
+      `${me.name}: Handelsangebot nicht möglich (niemand hat die gewünschten Rohstoffe).`,
+    );
+  }
 
   const now = Date.now();
   const offer: TradeOffer = {
@@ -785,24 +896,14 @@ export function createTradeOffer(
   };
 
   const nextOffers = pruneTradeOffers(state.tradeOffers.concat(offer));
-  return addEvent({ ...state, tradeOffers: nextOffers }, `${me.name} erstellt ein Handelsangebot.`);
+  return addEvent(
+    { ...state, tradeOffers: nextOffers, tradeOffersThisRound: incTradeOfferCountThisRound(state, playerId) },
+    `${me.name} erstellt ein Handelsangebot.`,
+  );
 }
 
 export function cancelTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
-  if (state.status !== "playing" || state.winnerPlayerId) return state;
-  if (state.phase !== "main") return state;
-
-  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
-  if (idx === -1) return state;
-  const offer = state.tradeOffers[idx]!;
-  if (offer.status !== "open") return state;
-  if (offer.fromPlayerId !== playerId) return state;
-
-  const now = Date.now();
-  const tradeOffers = state.tradeOffers.slice();
-  tradeOffers[idx] = { ...offer, status: "cancelled", updatedAt: now };
-  const me = state.players.find((p) => p.id === playerId);
-  return addEvent({ ...state, tradeOffers }, `${me?.name ?? "Spieler"} zieht ein Handelsangebot zurück.`);
+  return state;
 }
 
 export function declineTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
@@ -813,6 +914,7 @@ export function declineTradeOffer(state: GameState, playerId: string, params: { 
   if (idx === -1) return state;
   const offer = state.tradeOffers[idx]!;
   if (offer.status !== "open") return state;
+  if (!offer.toPlayerId) return state;
   if (offer.fromPlayerId === playerId) return state;
   if (offer.toPlayerId && offer.toPlayerId !== playerId) return state;
 
@@ -820,7 +922,10 @@ export function declineTradeOffer(state: GameState, playerId: string, params: { 
   const tradeOffers = state.tradeOffers.slice();
   tradeOffers[idx] = { ...offer, status: "declined", updatedAt: now };
   const me = state.players.find((p) => p.id === playerId);
-  return addEvent({ ...state, tradeOffers }, `${me?.name ?? "Spieler"} lehnt ein Handelsangebot ab.`);
+  return addEvent(
+    { ...state, tradeOffers, tradeOffersThisRound: decTradeOfferCountThisRound(state.tradeOffersThisRound, offer.fromPlayerId) },
+    `${me?.name ?? "Spieler"} lehnt ein Handelsangebot ab.`,
+  );
 }
 
 export function acceptTradeOffer(state: GameState, playerId: string, params: { offerId: string }): GameState {
@@ -833,7 +938,7 @@ export function acceptTradeOffer(state: GameState, playerId: string, params: { o
   if (offer.status !== "open") return state;
   if (offer.fromPlayerId === playerId) return state;
   if (offer.toPlayerId && offer.toPlayerId !== playerId) return state;
-  if (!isMyTurn(state, offer.fromPlayerId)) return state;
+  if (!isMyTurn(state, offer.fromPlayerId) && !(offer.toPlayerId && isMyTurn(state, offer.toPlayerId))) return state;
 
   const from = state.players.find((p) => p.id === offer.fromPlayerId);
   const to = state.players.find((p) => p.id === playerId);
@@ -862,42 +967,7 @@ export function counterTradeOffer(
   playerId: string,
   params: { offerId: string; give: Partial<Record<Resource, number>>; want: Partial<Record<Resource, number>> },
 ): GameState {
-  if (state.status !== "playing" || state.winnerPlayerId) return state;
-  if (state.phase !== "main") return state;
-
-  const idx = state.tradeOffers.findIndex((o) => o.id === params.offerId);
-  if (idx === -1) return state;
-  const original = state.tradeOffers[idx]!;
-  if (original.status !== "open") return state;
-  if (original.fromPlayerId === playerId) return state;
-  if (original.toPlayerId && original.toPlayerId !== playerId) return state;
-  if (!isMyTurn(state, original.fromPlayerId)) return state;
-
-  const give = normalizeAmounts(params.give);
-  const want = normalizeAmounts(params.want);
-  if (sumAmounts(give) <= 0 || sumAmounts(want) <= 0) return state;
-
-  const me = state.players.find((p) => p.id === playerId);
-  if (!me) return state;
-  if (!canPay(me, give)) return state;
-
-  const now = Date.now();
-  const offer: TradeOffer = {
-    id: randomUUID(),
-    fromPlayerId: playerId,
-    toPlayerId: original.fromPlayerId,
-    give,
-    want,
-    status: "open",
-    counterOfId: original.id,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  const tradeOffers = state.tradeOffers.slice();
-  tradeOffers[idx] = { ...original, status: "countered", updatedAt: now };
-  const nextOffers = pruneTradeOffers(tradeOffers.concat(offer));
-  return addEvent({ ...state, tradeOffers: nextOffers }, `${me.name} macht einen Gegenvorschlag.`);
+  return state;
 }
 
 function finishIfNeeded(state: GameState): GameState {
@@ -923,7 +993,17 @@ export function endTurn(state: GameState, playerId: string): GameState {
   const nextPlayerIndex = (state.currentPlayerIndex + 1) % state.players.length;
   const roundEnded = nextPlayerIndex === 0;
   const now = Date.now();
-  const tradeOffers = state.tradeOffers.map((o) => (o.status === "open" ? { ...o, status: "expired" as const, updatedAt: now } : o));
+  const expiredCountByFromId: Record<string, number> = {};
+  const tradeOffers = state.tradeOffers.map((o) => {
+    if (o.status !== "open") return o;
+    expiredCountByFromId[o.fromPlayerId] = (expiredCountByFromId[o.fromPlayerId] ?? 0) + 1;
+    return { ...o, status: "expired" as const, updatedAt: now };
+  });
+
+  let tradeOffersThisRound = state.tradeOffersThisRound;
+  for (const [fromId, n] of Object.entries(expiredCountByFromId)) {
+    tradeOffersThisRound = decTradeOfferCountThisRound(tradeOffersThisRound, fromId, n);
+  }
 
   let next: GameState = {
     ...state,
@@ -933,9 +1013,11 @@ export function endTurn(state: GameState, playerId: string): GameState {
     roundStartedAt: roundEnded ? Date.now() : state.roundStartedAt,
     turnStartedAt: Date.now(),
     tradeOffers,
+    tradeOffersThisRound,
   };
 
   if (roundEnded) {
+    next = { ...next, tradeOffersThisRound: {} };
     const rotated = rotateOuterRing(next.board, { steps: 1 });
     next = { ...next, board: rotated.board, round: next.round + 1 };
     if (rotated.tileIdMap.size && rotated.tileIdMap.has(next.blackHoleTileId)) {
@@ -1019,6 +1101,47 @@ export function botAct(state: GameState): GameState {
     }
 
     return next;
+  }
+
+  if (next.status === "playing" && next.phase === "main") {
+    const me = next.players.find((x) => x.id === p.id) ?? null;
+    if (me) {
+      const incoming = next.tradeOffers
+        .slice()
+        .reverse()
+        .filter((o) => o.status === "open" && o.fromPlayerId !== p.id)
+        .filter((o) => o.toPlayerId === p.id);
+      const offer = incoming[0] ?? null;
+      if (offer) {
+        const receivesScarce = (Object.keys(offer.give) as Resource[]).some(
+          (r) => (me.resources[r] ?? 0) === 0 && (offer.give[r] ?? 0) > 0,
+        );
+        const fair = sumAmounts(offer.give) >= sumAmounts(offer.want);
+        if (receivesScarce || fair) {
+          const attempt = acceptTradeOffer(next, p.id, { offerId: offer.id });
+          if (attempt !== next) return attempt;
+        }
+        const attempt = declineTradeOffer(next, p.id, { offerId: offer.id });
+        if (attempt !== next) return attempt;
+      }
+
+      const alreadyHasOpenOffer = next.tradeOffers.some((o) => o.status === "open" && o.fromPlayerId === p.id);
+      if (!alreadyHasOpenOffer && tradeOfferCountThisRound(next, p.id) < MAX_TRADE_OFFERS_PER_ROUND) {
+        const resources: Resource[] = ["metal", "gas", "crystal", "food", "data"];
+        let surplus: Resource | null = null;
+        let deficit: Resource | null = null;
+        for (const r of resources) {
+          if (!surplus || (me.resources[r] ?? 0) > (me.resources[surplus] ?? 0)) surplus = r;
+          if (!deficit || (me.resources[r] ?? 0) < (me.resources[deficit] ?? 0)) deficit = r;
+        }
+        if (surplus && deficit && (me.resources[surplus] ?? 0) >= 3 && (me.resources[deficit] ?? 0) === 0) {
+          const give: Partial<Record<Resource, number>> = { [surplus]: 1 };
+          const want: Partial<Record<Resource, number>> = { [deficit]: 1 };
+          const attempt = createTradeOffer(next, p.id, { toPlayerId: null, give, want });
+          if (attempt !== next) return attempt;
+        }
+      }
+    }
   }
 
   const diceWeight: Record<number, number> = { 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1 };

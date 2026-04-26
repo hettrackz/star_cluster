@@ -8,7 +8,7 @@ import { registerGameRoutes } from "./api/games";
 import { registerAuthRoutes } from "./api/auth";
 import { registerFriendRoutes } from "./api/friends";
 import { getGame, getAllGames, updateGameState, removeGame } from "./game/registry";
-import { acceptTradeOffer, botAct, buildHyperlane, buildStation, buildWarpLane, cancelTradeOffer, counterTradeOffer, createTradeOffer, declineTradeOffer, endTurn, handleRoll, resolveWormhole, startGame, tradeBlackMarket, upgradeToStarbase } from "./game/engine";
+import { acceptTradeOffer, botAct, buildHyperlane, buildStation, buildWarpLane, cancelTradeOffer, counterTradeOffer, createTradeOffer, declineTradeOffer, endTurn, expireTradeOffers, handleRoll, resolveWormhole, startGame, tradeBlackMarket, upgradeToStarbase } from "./game/engine";
 import type { ChatMessage, DiceRoll, GameState, Player, PlayerColor, Resource, TileId } from "./game/types";
 import { randomUUID } from "node:crypto";
 import { verifyUserToken } from "./auth/jwt";
@@ -115,7 +115,7 @@ app.get(/^(?!\/(api|socket\.io)).*/, (req, res) => {
   res.sendFile(path.join(frontendDistPath, "index.html"));
 });
 
-const TURN_TIMEOUT_MS = 45000;
+const DEFAULT_TURN_TIMEOUT_MS = 45000;
 const INACTIVE_TURN_TIMEOUT_LIMIT = 10;
 const GAME_INACTIVE_TIMEOUT_MS = 3600000;
 
@@ -127,6 +127,24 @@ type GameActivityMeta = {
 const activityByGameId = new Map<string, GameActivityMeta>();
 const socketsByGameId = new Map<string, Set<string>>();
 const endingGames = new Set<string>();
+const emptyEndTimersByGameId = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearEmptyEndTimer(gameId: string) {
+  const t = emptyEndTimersByGameId.get(gameId);
+  if (t) clearTimeout(t);
+  emptyEndTimersByGameId.delete(gameId);
+}
+
+function scheduleEndIfStillEmpty(gameId: string) {
+  clearEmptyEndTimer(gameId);
+  emptyEndTimersByGameId.set(
+    gameId,
+    setTimeout(() => {
+      const sockets = socketsByGameId.get(gameId);
+      if (!sockets || sockets.size === 0) endGame(gameId, "empty");
+    }, 3000),
+  );
+}
 
 function ensureActivity(gameId: string, fallbackTimestamp: number) {
   const existing = activityByGameId.get(gameId);
@@ -154,6 +172,7 @@ function markTurnTimeout(gameId: string) {
 function endGame(gameId: string, reason: "inactive_turns" | "inactive_time" | "empty") {
   if (endingGames.has(gameId)) return;
   endingGames.add(gameId);
+  clearEmptyEndTimer(gameId);
 
   const game = getGame(gameId);
   if (game) {
@@ -178,6 +197,7 @@ function endGame(gameId: string, reason: "inactive_turns" | "inactive_time" | "e
   removeGame(gameId);
   activityByGameId.delete(gameId);
   socketsByGameId.delete(gameId);
+  emptyEndTimersByGameId.delete(gameId);
 
   setTimeout(() => {
     endingGames.delete(gameId);
@@ -224,10 +244,23 @@ setInterval(() => {
 
     const activity = ensureActivity(game.id, game.state.turnStartedAt);
 
+    if (game.state.status === "playing" && !game.state.winnerPlayerId) {
+      const expiredState = expireTradeOffers(game.state, now);
+      if (expiredState !== game.state) {
+        updateGameState(game.id, expiredState);
+        io.to(game.id).emit("game_state", { state: expiredState });
+      }
+    }
+
     // 1. Handle Turn Timeout
     if (game.state.status === "playing" && !game.state.winnerPlayerId) {
       const timeSinceStart = now - game.state.turnStartedAt;
-      if (timeSinceStart >= TURN_TIMEOUT_MS) {
+      const rawLimit = game.state.turnLimitMs;
+      const limitMs = Math.min(
+        10 * 60 * 1000,
+        Math.max(15 * 1000, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : DEFAULT_TURN_TIMEOUT_MS),
+      );
+      if (timeSinceStart >= limitMs) {
         const timedOutPlayerId = game.state.players[game.state.currentPlayerIndex]?.id;
         if (timedOutPlayerId) {
           let newState = game.state;
@@ -315,13 +348,81 @@ function runBotsUntilHuman(gameId: string, initialState: GameState) {
     }
     io.to(gameId).emit("game_state", { state: next });
 
-    const t = setTimeout(step, 1000);
+    let delayMs = 1000;
+    const lastPrevOffer = prev.tradeOffers[prev.tradeOffers.length - 1] ?? null;
+    const lastNextOffer = next.tradeOffers[next.tradeOffers.length - 1] ?? null;
+    if (
+      cp.isBot &&
+      lastNextOffer &&
+      (!lastPrevOffer || lastPrevOffer.id !== lastNextOffer.id) &&
+      lastNextOffer.fromPlayerId === cp.id &&
+      lastNextOffer.status === "open"
+    ) {
+      delayMs = 4000;
+    }
+
+    const t = setTimeout(step, delayMs);
     botRunnerByGameId.set(gameId, t);
   };
 
   const t = setTimeout(step, 1000);
   botRunnerByGameId.set(gameId, t);
   return initialState;
+}
+
+function sumAmounts(amounts: Partial<Record<Resource, number>>): number {
+  return (Object.values(amounts) as number[]).reduce((a, b) => a + (b ?? 0), 0);
+}
+
+function reduceToPay(player: Player, want: Partial<Record<Resource, number>>): Partial<Record<Resource, number>> {
+  const out: Partial<Record<Resource, number>> = {};
+  for (const r of ["metal", "gas", "crystal", "food", "data"] as Resource[]) {
+    const v = Math.min(Math.floor(want[r] ?? 0), Math.floor(player.resources[r] ?? 0));
+    if (Number.isFinite(v) && v > 0) out[r] = v;
+  }
+  return out;
+}
+
+function applyTradeBotReactions(state: GameState): GameState {
+  if (state.status !== "playing" || state.winnerPlayerId) return state;
+  if (state.phase !== "main") return state;
+
+  const current = state.players[state.currentPlayerIndex] ?? null;
+  if (!current || current.isBot) return state;
+
+  let next = state;
+  for (const bot of next.players) {
+    if (!bot.isBot) continue;
+    if (bot.id === current.id) continue;
+
+    const openOffers = next.tradeOffers
+      .filter((o) => o.status === "open")
+      .filter((o) => o.fromPlayerId === current.id)
+      .filter((o) => o.toPlayerId === null || o.toPlayerId === bot.id);
+    if (!openOffers.length) continue;
+    const offer = openOffers[openOffers.length - 1]!;
+
+    const receivesScarce = (Object.keys(offer.give) as Resource[]).some(
+      (r) => (bot.resources[r] ?? 0) === 0 && (offer.give[r] ?? 0) > 0,
+    );
+    const fair = sumAmounts(offer.give) >= sumAmounts(offer.want);
+
+    if ((receivesScarce || fair) && sumAmounts(reduceToPay(bot, offer.want)) === sumAmounts(offer.want)) {
+      const attempt = acceptTradeOffer(next, bot.id, { offerId: offer.id });
+      if (attempt !== next) {
+        next = attempt;
+        continue;
+      }
+    }
+
+    if (offer.toPlayerId === bot.id) {
+      const attempt = declineTradeOffer(next, bot.id, { offerId: offer.id });
+      if (attempt !== next) {
+        next = attempt;
+      }
+    }
+  }
+  return next;
 }
 
 io.on("connection", (socket) => {
@@ -337,6 +438,7 @@ io.on("connection", (socket) => {
 
     let authedUserId: string | null = null;
     let authedUserName: string | null = null;
+    let authedUserAvatarUrl: string | undefined = undefined;
     try {
       const claims = verifyUserToken(token);
       const user = await getUserById(claims.sub);
@@ -346,14 +448,22 @@ io.on("connection", (socket) => {
       }
       authedUserId = user.id;
       authedUserName = user.name;
+      authedUserAvatarUrl = typeof user.avatarUrl === "string" ? user.avatarUrl : undefined;
     } catch {
       socket.emit("error_message", { message: "Unauthorized." });
       return;
     }
 
     markHumanActivity(gameId);
+    clearEmptyEndTimer(gameId);
 
     const player = game.state.players.find((p) => p.id === authedUserId);
+    const resolvedAvatarUrl =
+      typeof avatarUrl === "string" && avatarUrl.trim()
+        ? avatarUrl.trim()
+        : typeof authedUserAvatarUrl === "string" && authedUserAvatarUrl.trim()
+          ? authedUserAvatarUrl.trim()
+          : undefined;
 
     if (!player && game.state.status !== "lobby") {
       socket.emit("error_message", { message: "Game already started." });
@@ -366,12 +476,41 @@ io.on("connection", (socket) => {
         id: authedUserId,
         name: authedUserName,
         color: playerColors[game.state.players.length]!,
-        avatarUrl: avatarUrl,
+        avatarUrl: resolvedAvatarUrl,
         isBot: false,
+        isReady: false,
         score: 0,
         resources: { metal: 0, gas: 0, crystal: 0, food: 0, data: 0 },
       };
       game.state.players.push(newPlayer);
+    }
+    if (player && resolvedAvatarUrl && player.avatarUrl !== resolvedAvatarUrl) {
+      game.state.players = game.state.players.map((p) =>
+        p.id === authedUserId ? { ...p, avatarUrl: resolvedAvatarUrl } : p,
+      );
+    }
+    const missingAvatarIds = game.state.players
+      .filter((p) => !p.isBot && (!p.avatarUrl || !p.avatarUrl.trim()))
+      .map((p) => p.id);
+    if (missingAvatarIds.length) {
+      const hydrated = await Promise.all(
+        missingAvatarIds.map(async (id) => {
+          try {
+            const u = await getUserById(id);
+            const av = typeof u?.avatarUrl === "string" && u.avatarUrl.trim() ? u.avatarUrl.trim() : undefined;
+            return { id, avatarUrl: av };
+          } catch {
+            return { id, avatarUrl: undefined };
+          }
+        }),
+      );
+      const avatarById = new Map(hydrated.filter((x) => x.avatarUrl).map((x) => [x.id, x.avatarUrl!] as const));
+      if (avatarById.size) {
+        game.state.players = game.state.players.map((p) => {
+          const av = avatarById.get(p.id);
+          return av ? { ...p, avatarUrl: av } : p;
+        });
+      }
     }
 
     socket.join(gameId);
@@ -384,27 +523,187 @@ io.on("connection", (socket) => {
     io.to(gameId).emit("game_state", { state: game.state });
   });
 
-  socket.on("start_game", (payload: { gameId: string }) => {
-    const { gameId } = payload;
+  socket.on("player_ready_set", (payload: { gameId: string; ready: boolean }, ack?: (res: { ok: boolean; message?: string }) => void) => {
+    const { gameId, ready } = payload;
     const game = getGame(gameId);
     if (!game) {
-      return socket.emit("error_message", { message: "Game not found." });
+      socket.emit("error_message", { message: "Game not found." });
+      ack?.({ ok: false, message: "Game not found." });
+      return;
     }
     const meta = socketMeta.get(socket.id);
-    if (!meta?.playerId || meta.gameId !== gameId) return;
-    if (game.state.creatorId !== meta.playerId) {
-      return socket.emit("error_message", { message: "Only the creator can start the game." });
+    if (!meta?.playerId || meta.gameId !== gameId) {
+      socket.emit("error_message", { message: "Not in game." });
+      ack?.({ ok: false, message: "Not in game." });
+      return;
     }
-    const possibleBots = Math.min(game.state.maxBots ?? 0, Math.max(0, 4 - game.state.players.length));
-    if (game.state.players.length + possibleBots < 2) {
-      return socket.emit("error_message", { message: "Need at least 2 players (humans or bots) to start." });
+    if (game.state.status !== "lobby") {
+      socket.emit("error_message", { message: "Game already started." });
+      ack?.({ ok: false, message: "Game already started." });
+      return;
+    }
+    if (!game.state.players.some((p) => p.id === meta.playerId && !p.isBot)) {
+      socket.emit("error_message", { message: "Player not found." });
+      ack?.({ ok: false, message: "Player not found." });
+      return;
     }
 
     markHumanActivity(gameId);
-    const newState = startGame(game.state);
-    updateGameState(gameId, newState);
-    io.to(gameId).emit("game_state", { state: newState });
-    runBotsUntilHuman(gameId, newState);
+    game.state.players = game.state.players.map((p) =>
+      p.id === meta.playerId ? { ...p, isReady: Boolean(ready) } : p,
+    );
+    updateGameState(gameId, game.state);
+    io.to(gameId).emit("game_state", { state: game.state });
+    ack?.({ ok: true });
+  });
+
+  socket.on("lobby_add_bot", (payload: { gameId: string }, ack?: (res: { ok: boolean; message?: string }) => void) => {
+    const { gameId } = payload;
+    const game = getGame(gameId);
+    if (!game) {
+      socket.emit("error_message", { message: "Game not found." });
+      ack?.({ ok: false, message: "Game not found." });
+      return;
+    }
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) {
+      socket.emit("error_message", { message: "Not in game." });
+      ack?.({ ok: false, message: "Not in game." });
+      return;
+    }
+    if (!game.state.players.some((p) => p.id === meta.playerId && !p.isBot)) {
+      socket.emit("error_message", { message: "Player not found." });
+      ack?.({ ok: false, message: "Player not found." });
+      return;
+    }
+    if (game.state.status !== "lobby") {
+      socket.emit("error_message", { message: "Game already started." });
+      ack?.({ ok: false, message: "Game already started." });
+      return;
+    }
+
+    const currentBotCount = game.state.players.filter((p) => p.isBot).length;
+    if (currentBotCount >= 3) {
+      socket.emit("error_message", { message: "Max bots reached." });
+      ack?.({ ok: false, message: "Max bots reached." });
+      return;
+    }
+    const availableSlots = Math.max(0, 4 - game.state.players.length);
+    if (availableSlots <= 0) {
+      socket.emit("error_message", { message: "Lobby is full." });
+      ack?.({ ok: false, message: "Lobby is full." });
+      return;
+    }
+
+    markHumanActivity(gameId);
+    const botIndex = currentBotCount + 1;
+    const color = playerColors[game.state.players.length]!;
+    const bot: Player = {
+      id: `bot:${botIndex}`,
+      name: `Bot ${botIndex}`,
+      color,
+      avatarUrl: undefined,
+      isBot: true,
+      isReady: true,
+      score: 0,
+      resources: { metal: 0, gas: 0, crystal: 0, food: 0, data: 0 },
+    };
+    game.state.players = game.state.players.concat(bot);
+    game.state.maxBots = Math.max(game.state.maxBots ?? 0, currentBotCount + 1);
+    updateGameState(gameId, game.state);
+    io.to(gameId).emit("game_state", { state: game.state });
+    ack?.({ ok: true });
+  });
+
+  socket.on("lobby_remove_bot", (payload: { gameId: string }, ack?: (res: { ok: boolean; message?: string }) => void) => {
+    const { gameId } = payload;
+    const game = getGame(gameId);
+    if (!game) {
+      socket.emit("error_message", { message: "Game not found." });
+      ack?.({ ok: false, message: "Game not found." });
+      return;
+    }
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) {
+      socket.emit("error_message", { message: "Not in game." });
+      ack?.({ ok: false, message: "Not in game." });
+      return;
+    }
+    if (!game.state.players.some((p) => p.id === meta.playerId && !p.isBot)) {
+      socket.emit("error_message", { message: "Player not found." });
+      ack?.({ ok: false, message: "Player not found." });
+      return;
+    }
+    if (game.state.status !== "lobby") {
+      socket.emit("error_message", { message: "Game already started." });
+      ack?.({ ok: false, message: "Game already started." });
+      return;
+    }
+
+    const botIds = game.state.players.filter((p) => p.isBot).map((p) => p.id);
+    const lastBotId = botIds[botIds.length - 1] ?? null;
+    if (!lastBotId) {
+      socket.emit("error_message", { message: "No bots to remove." });
+      ack?.({ ok: false, message: "No bots to remove." });
+      return;
+    }
+
+    markHumanActivity(gameId);
+    game.state.players = game.state.players.filter((p) => p.id !== lastBotId);
+    const remainingBotCount = game.state.players.filter((p) => p.isBot).length;
+    game.state.maxBots = Math.min(game.state.maxBots ?? 0, remainingBotCount);
+    updateGameState(gameId, game.state);
+    io.to(gameId).emit("game_state", { state: game.state });
+    ack?.({ ok: true });
+  });
+
+  socket.on("start_game", (payload: { gameId: string }, ack?: (res: { ok: boolean; message?: string }) => void) => {
+    const { gameId } = payload;
+    const game = getGame(gameId);
+    if (!game) {
+      socket.emit("error_message", { message: "Game not found." });
+      ack?.({ ok: false, message: "Game not found." });
+      return;
+    }
+    const meta = socketMeta.get(socket.id);
+    if (!meta?.playerId || meta.gameId !== gameId) {
+      socket.emit("error_message", { message: "Not in game." });
+      ack?.({ ok: false, message: "Not in game." });
+      return;
+    }
+    if (game.state.creatorId !== meta.playerId) {
+      socket.emit("error_message", { message: "Only the creator can start the game." });
+      ack?.({ ok: false, message: "Only the creator can start the game." });
+      return;
+    }
+    if (game.state.status !== "lobby") {
+      socket.emit("error_message", { message: "Game already started." });
+      ack?.({ ok: false, message: "Game already started." });
+      return;
+    }
+    if (game.state.players.length < 2) {
+      socket.emit("error_message", { message: "Need at least 2 players (humans or bots) to start." });
+      ack?.({ ok: false, message: "Need at least 2 players (humans or bots) to start." });
+      return;
+    }
+    if (game.state.players.length > 4) {
+      socket.emit("error_message", { message: "Too many players." });
+      ack?.({ ok: false, message: "Too many players." });
+      return;
+    }
+    const humans = game.state.players.filter((p) => !p.isBot);
+    if (humans.some((p) => !p.isReady)) {
+      socket.emit("error_message", { message: "All players must be ready to start." });
+      ack?.({ ok: false, message: "All players must be ready to start." });
+      return;
+    }
+
+    markHumanActivity(gameId);
+    const started = startGame(game.state);
+    updateGameState(gameId, started);
+    io.to(gameId).emit("game_state", { state: started });
+    runBotsUntilHuman(gameId, started);
+    ack?.({ ok: true });
   });
 
   socket.on("roll_dice", (payload: { gameId: string }) => {
@@ -532,7 +831,8 @@ io.on("connection", (socket) => {
       const meta = socketMeta.get(socket.id);
       if (!meta?.playerId || meta.gameId !== gameId) return;
       markHumanActivity(gameId);
-      const newState = createTradeOffer(game.state, meta.playerId, { toPlayerId: toPlayerId ?? null, give, want });
+      let newState = createTradeOffer(game.state, meta.playerId, { toPlayerId: toPlayerId ?? null, give, want });
+      newState = applyTradeBotReactions(newState);
       updateGameState(gameId, newState);
       io.to(gameId).emit("game_state", { state: newState });
       runBotsUntilHuman(gameId, newState);
@@ -644,18 +944,8 @@ io.on("connection", (socket) => {
 
     sockets.delete(socket.id);
     if (sockets.size === 0) {
-      endGame(gameId, "empty");
-      return;
-    }
-
-    const connectedPlayerIds = new Set<string>();
-    for (const sid of sockets) {
-      const m = socketMeta.get(sid);
-      if (m?.gameId === gameId && m.playerId) connectedPlayerIds.add(m.playerId);
-    }
-
-    if (connectedPlayerIds.size <= 1) {
-      endGame(gameId, "empty");
+      socketsByGameId.set(gameId, sockets);
+      scheduleEndIfStillEmpty(gameId);
       return;
     }
 

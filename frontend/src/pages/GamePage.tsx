@@ -3,25 +3,31 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useStat
 const tMap = {
   de: {
     round: 'Runde', setup: 'Aufbau', time: 'Rundenzeit', build: 'Bauen', market: 'Schwarzmarkt',
-    log: 'Log', chat: 'Chat', endTurn: 'Zug Ende', soundOn: 'Ton an', soundOff: 'Ton aus',
+    log: 'Log', chat: 'Chat', recipes: 'Rezepte', endTurn: 'Zug Ende', soundOn: 'Ton an', soundOff: 'Ton aus',
     pts: 'Punkte', res: 'Rohstoffe', winner: 'Gewinner', win: 'Sieg!', station: 'Station',
     starbase: 'Sternenbasis', hyperlane: 'Hyperlane', warp: 'Warp-Lane', blackhole: 'Schwarzes Loch',
     close: 'Schließen', cancel: 'Abbrechen', events: 'Ereignisse', dice: 'Würfel', gas: 'Gas',
     metal: 'Metall', crystal: 'Kristall', food: 'Nahrung', data: 'Daten', leaveGame: 'Spiel verlassen',
     leaveGameConfirm: 'Spiel wirklich beenden und zur Lobby zurückkehren?',
     langToggle: 'EN', dragPlace: 'Ziehen zum Platzieren', dragCancel: 'ESC: Abbrechen',
-    startChoose: 'Startpunkt wählen', targetChoose: 'Zielpunkt wählen', startGame: 'Spiel starten'
+    startChoose: 'Startpunkt wählen', targetChoose: 'Zielpunkt wählen', startGame: 'Spiel starten',
+    setupFree: 'Setup: kostenlos',
+    turnNow: 'Am Zug',
+    hyperlaneEdgeHint: 'Hyperlane: Kante klicken · ESC: Abbrechen'
   },
   en: {
     round: 'Round', setup: 'Setup', time: 'Round Time', build: 'Build', market: 'Market',
-    log: 'Log', chat: 'Chat', endTurn: 'End Turn', soundOn: 'Sound On', soundOff: 'Sound Off',
+    log: 'Log', chat: 'Chat', recipes: 'Recipes', endTurn: 'End Turn', soundOn: 'Sound On', soundOff: 'Sound Off',
     pts: 'Pts', res: 'Res', winner: 'Winner', win: 'Victory!', station: 'Station',
     starbase: 'Starbase', hyperlane: 'Hyperlane', warp: 'Warp-Lane', blackhole: 'Black Hole',
     close: 'Close', cancel: 'Cancel', events: 'Events', dice: 'Dice', gas: 'Gas',
     metal: 'Metal', crystal: 'Crystal', food: 'Food', data: 'Data', leaveGame: 'Leave Game',
     leaveGameConfirm: 'Leave the game and return to the lobby?',
     langToggle: 'DE', dragPlace: 'Drag to place', dragCancel: 'ESC: Cancel',
-    startChoose: 'Choose start point', targetChoose: 'Choose target point', startGame: 'Start game'
+    startChoose: 'Choose start point', targetChoose: 'Choose target point', startGame: 'Start game',
+    setupFree: 'Setup: free',
+    turnNow: 'Turn',
+    hyperlaneEdgeHint: 'Hyperlane: click an edge · ESC: Cancel'
   }
 }
 
@@ -330,6 +336,33 @@ function hitTestVertex(vertices: BoardVertex[], x: number, y: number, radiusPx: 
   return best?.id ?? null
 }
 
+function dist2PointToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const abx = bx - ax
+  const aby = by - ay
+  const apx = px - ax
+  const apy = py - ay
+  const abLen2 = abx * abx + aby * aby
+  const t = abLen2 <= 0 ? 0 : Math.min(1, Math.max(0, (apx * abx + apy * aby) / abLen2))
+  const cx = ax + abx * t
+  const cy = ay + aby * t
+  const dx = px - cx
+  const dy = py - cy
+  return dx * dx + dy * dy
+}
+
+function hitTestEdge(edges: BoardEdge[], vById: Map<string, BoardVertex>, x: number, y: number, radiusPx: number) {
+  let best: { id: string; d2: number } | null = null
+  const r2 = radiusPx * radiusPx
+  for (const e of edges) {
+    const a = vById.get(e.a)
+    const b = vById.get(e.b)
+    if (!a || !b) continue
+    const d2 = dist2PointToSegment(x, y, a.x, a.y, b.x, b.y)
+    if (d2 <= r2 && (!best || d2 < best.d2)) best = { id: e.id, d2 }
+  }
+  return best?.id ?? null
+}
+
 function pointInPoly(px: number, py: number, poly: Array<{ x: number; y: number }>) {
   let inside = false
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -345,8 +378,10 @@ function pointInPoly(px: number, py: number, poly: Array<{ x: number; y: number 
 
 function findTileAtPoint(state: GameState, x: number, y: number, vById: Map<string, BoardVertex>) {
   for (const t of state.board.tiles) {
-    const poly = t.cornerVertexIds.map((vid) => vById.get(vid)!).map((v) => ({ x: v.x, y: v.y }))
-    if (poly.every(Boolean) && pointInPoly(x, y, poly)) return t
+    const verts = t.cornerVertexIds.map((vid) => vById.get(vid)).filter((v): v is BoardVertex => Boolean(v))
+    if (verts.length !== t.cornerVertexIds.length) continue
+    const poly = verts.map((v) => ({ x: v.x, y: v.y }))
+    if (pointInPoly(x, y, poly)) return t
   }
   return null
 }
@@ -394,6 +429,27 @@ function CostInline({ cost, resources }: { cost: Partial<Record<Resource, number
   )
 }
 
+function CostStaticInline({ cost }: { cost: Partial<Record<Resource, number>> }) {
+  const order: Resource[] = ['metal', 'gas', 'crystal', 'food', 'data']
+  return (
+    <span className="star-cost-inline" aria-label="Kosten">
+      {order
+        .filter((r) => (cost[r] ?? 0) > 0)
+        .map((r) => {
+          const need = cost[r] ?? 0
+          return (
+            <span key={r} className="star-cost-item">
+              <img className="star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+              <span className="star-cost-num">
+                <span className="star-cost-covered">{need}</span>
+              </span>
+            </span>
+          )
+        })}
+    </span>
+  )
+}
+
 function buildIcon(kind: 'station' | 'hyperlane' | 'upgrade' | 'warp' | 'blackhole', playerClr: Player['color'] | undefined) {
   const c = playerClr ?? 'blue'
   const wrap = (node: ReactNode) => <div className="star-hex-symbol">{node}</div>
@@ -423,13 +479,33 @@ function buildIcon(kind: 'station' | 'hyperlane' | 'upgrade' | 'warp' | 'blackho
 }
 
 function GameInner() {
+  const { isConnected, state, lastError } = useGameState()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (state) return
+    if (!lastError) return
+    navigate('/lobby', { replace: true, state: { error: lastError } })
+  }, [state, lastError, navigate])
+
+  if (!state) {
+    return (
+      <div className="page">
+        {lastError ? <div className="error-banner">{lastError}</div> : null}
+        <div className="loading">{isConnected ? 'Lädt…' : 'Verbinde…'}</div>
+      </div>
+    )
+  }
+  return <GameInnerReady state={state} />
+}
+
+function GameInnerReady({ state }: { state: GameState }) {
   const [lang, setLang] = useState<'de'|'en'>(() => (window.localStorage.getItem('star_lang') as 'de'|'en') || 'de')
   const t = tMap[lang]
-  const { state, lastError, lastDiceEvent, startGame, rollDice, buildStation, buildHyperlane, buildWarpLane, upgradeStarbase, endTurn, resolveWormhole, tradeBlackMarket, createTradeOffer, cancelTradeOffer, declineTradeOffer, acceptTradeOffer, counterTradeOffer } = useGameState()
+  const { socket, isConnected, lastError, lastDiceEvent, rollDice, buildStation, buildHyperlane, buildWarpLane, upgradeStarbase, endTurn, resolveWormhole, tradeBlackMarket, createTradeOffer, declineTradeOffer, acceptTradeOffer } = useGameState()
   const { user } = useAuth()
   const navigate = useNavigate()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const topbarRef = useRef<HTMLDivElement | null>(null)
   const bottombarRef = useRef<HTMLDivElement | null>(null)
   const [mode, setMode] = useState<'none' | 'station' | 'hyperlane' | 'upgrade' | 'warp' | 'blackhole'>('none')
   const [pendingVertex, setPendingVertex] = useState<string | null>(null)
@@ -437,16 +513,21 @@ function GameInner() {
   const [isRolling, setIsRolling] = useState(false)
   const [marketGive, setMarketGive] = useState<Resource>('metal')
   const [marketReceive, setMarketReceive] = useState<Resource>('gas')
-  const [marketTab, setMarketTab] = useState<'hole' | 'players'>('hole')
-  const [marketToPlayerId, setMarketToPlayerId] = useState<string | null>(null)
+  const [marketTab, setMarketTab] = useState<'hole' | 'players'>('players')
   const [offerGive, setOfferGive] = useState<Partial<Record<Resource, number>>>({})
   const [offerWant, setOfferWant] = useState<Partial<Record<Resource, number>>>({})
-  const [counterForOfferId, setCounterForOfferId] = useState<string | null>(null)
-  const [topbarH, setTopbarH] = useState(84)
   const [bottombarH, setBottombarH] = useState(84)
+  const topUiInset = 44
   const [zoomLevel, setZoomLevel] = useState<0 | 1 | 2>(1)
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [openMenu, setOpenMenu] = useState<'build' | 'market' | 'chat' | 'log' | null>(null)
+  const [visualStyle, setVisualStyle] = useState<'classic' | 'holo'>(() =>
+    window.localStorage.getItem('star_visual_style') === 'holo' ? 'holo' : 'classic',
+  )
+  const [openMenu, setOpenMenu] = useState<'build' | 'market' | 'chat' | 'log' | 'recipes' | null>(null)
+  const openMenuRef = useRef<'build' | 'market' | 'chat' | 'log' | 'recipes' | null>(null)
+  const prevMenuForResetRef = useRef<'build' | 'market' | 'chat' | 'log' | 'recipes' | null>(null)
+  const prevMarketTabForResetRef = useRef<'hole' | 'players'>('players')
+  const resetHoleSelectionRef = useRef(false)
   const [nowMs, setNowMs] = useState(0)
   type DragState = { kind: 'station' | 'hyperlane' | 'upgrade' | 'warp' | 'blackhole'; step: 1 | 2; startVertexId?: string; x: number; y: number }
   const [drag, setDrag] = useState<null | DragState>(null)
@@ -478,10 +559,19 @@ function GameInner() {
   const playToneRef = useRef<(freq: number, durationMs: number, type: OscillatorType, gainValue: number) => void>(() => {})
   const stopDragRef = useRef<() => void>(() => {})
   const [hoverVertexId, setHoverVertexId] = useState<string | null>(null)
+  const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null)
   const [eventToast, setEventToast] = useState<{ text: string; untilMs: number } | null>(null)
+  const [dealNotice, setDealNotice] = useState<null | { text: string; kind: 'ok' | 'bad' | 'info' }>(null)
   const [dragShake, setDragShake] = useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
   const [hoverTileTip, setHoverTileTip] = useState<{ x: number; y: number; text: string } | null>(null)
+  const eventTextRef = useRef<HTMLDivElement | null>(null)
+  const [eventMarquee, setEventMarquee] = useState(false)
+  const rightDockRef = useRef<HTMLDivElement | null>(null)
+  const [eventRightInset, setEventRightInset] = useState(220)
+  const [actionDockTopPx, setActionDockTopPx] = useState<number | null>(null)
+  const actionDockGroupRef = useRef<HTMLDivElement | null>(null)
+  const [actionDockTwoCol, setActionDockTwoCol] = useState(false)
   const [cursorBuildPos, setCursorBuildPos] = useState<{ x: number; y: number } | null>(null)
   const [rotateFlash, setRotateFlash] = useState<{
     startMs: number
@@ -491,6 +581,30 @@ function GameInner() {
   const [bhBoostUntilMs, setBhBoostUntilMs] = useState(0)
   const canvasWrapRef = useRef<HTMLDivElement | null>(null)
   const wormholePromptedRef = useRef(false)
+  const lastSeenIncomingOfferIdRef = useRef<string | null>(null)
+  const holoNoisePatternRef = useRef<CanvasPattern | null>(null)
+  const holoFxRef = useRef<
+    Array<
+      | { kind: 'pulse_vertex'; vertexId: string; startMs: number; color: string }
+      | { kind: 'pulse_edge'; edgeId: string; startMs: number; color: string }
+    >
+  >([])
+  const pendingBlackHoleTradeRef = useRef<null | {
+    token: string
+    give: Resource
+    receive: Resource
+    rate: number
+    startedAtMs: number
+    before: {
+      giveHave: number
+      receiveHave: number
+      poolGive: number
+      poolReceive: number
+    }
+  }>(null)
+  const pendingTradeOfferCreateRef = useRef<null | { token: string; startedAtMs: number }>(null)
+  const lastTradeOfferStatusRef = useRef<null | { offerId: string; status: string }>(null)
+  const pendingTradeAcceptRef = useRef<string | null>(null)
 
   const meId = user?.id ?? ''
   const { assetsRef, version: assetsVersion } = useImageAssets()
@@ -519,12 +633,27 @@ function GameInner() {
   }, [state?.board.edges])
 
   const isMyTurn = Boolean(state && state.players[state.currentPlayerIndex]?.id === meId)
-  const canStartGame = Boolean(
-    state &&
-      state.status === 'lobby' &&
-      state.creatorId === meId &&
-      state.players.length + Math.min(state.maxBots ?? 0, Math.max(0, 4 - state.players.length)) >= 2,
-  )
+
+  const setVisualStyleBoth = (next: 'classic' | 'holo') => {
+    setVisualStyle(next)
+    window.localStorage.setItem('star_visual_style', next)
+  }
+
+  const emitHoloPulseVertex = (vertexId: string) => {
+    if (visualStyle !== 'holo') return
+    const clr = playerColor(state.players.find((p) => p.id === meId)?.color ?? 'blue')
+    holoFxRef.current.push({ kind: 'pulse_vertex', vertexId, startMs: Date.now(), color: clr })
+  }
+  const emitHoloPulseEdge = (edgeId: string) => {
+    if (visualStyle !== 'holo') return
+    const clr = playerColor(state.players.find((p) => p.id === meId)?.color ?? 'blue')
+    holoFxRef.current.push({ kind: 'pulse_edge', edgeId, startMs: Date.now(), color: clr })
+  }
+
+  useEffect(() => {
+    if (!state) return
+    if (state.status === 'lobby') navigate(`/waiting/${state.id}`, { replace: true })
+  }, [state, navigate])
 
   const axialDistance = (q: number, r: number) => {
     const x = q
@@ -647,12 +776,14 @@ function GameInner() {
       setMode('none')
       setPendingVertex(null)
       setPendingWarpFrom(null)
+      setHoverEdgeId(null)
     }
     const onCtx = (e: MouseEvent) => {
       e.preventDefault()
       setMode('none')
       setPendingVertex(null)
       setPendingWarpFrom(null)
+      setHoverEdgeId(null)
     }
     window.addEventListener('pointerdown', onDown, true)
     window.addEventListener('contextmenu', onCtx, true)
@@ -664,12 +795,59 @@ function GameInner() {
 
   useEffect(() => {
     if (!state) return
-    setOpenMenu(null)
+    const m = openMenuRef.current
+    if (m === 'build' || m === 'market') setOpenMenu(null)
     setMode('none')
     setPendingVertex(null)
     setPendingWarpFrom(null)
+    setHoverEdgeId(null)
     stopDragRef.current()
   }, [state?.turnStartedAt, state?.currentPlayerIndex])
+
+  useEffect(() => {
+    openMenuRef.current = openMenu
+  }, [openMenu])
+
+  useEffect(() => {
+    const prevMenu = prevMenuForResetRef.current
+    const prevTab = prevMarketTabForResetRef.current
+    prevMenuForResetRef.current = openMenu
+    prevMarketTabForResetRef.current = marketTab
+
+    if (openMenu === 'market' && prevMenu !== 'market') {
+      setDealNotice(null)
+      if (marketTab === 'hole') resetHoleSelectionRef.current = true
+    }
+    if (openMenu === 'market' && marketTab === 'hole' && prevTab !== 'hole') {
+      resetHoleSelectionRef.current = true
+    }
+  }, [openMenu, marketTab])
+
+  useEffect(() => {
+    if (!state) return
+    if (state.status !== 'playing') return
+    if (!meId) return
+    const latest = state.tradeOffers
+      .filter((o) => o.status === 'open')
+      .filter((o) => o.fromPlayerId !== meId)
+      .filter((o) => o.toPlayerId === null || o.toPlayerId === meId)
+      .slice(-1)[0]
+    if (!latest) return
+    if (lastSeenIncomingOfferIdRef.current === latest.id) return
+    lastSeenIncomingOfferIdRef.current = latest.id
+    const me = state.players.find((p) => p.id === meId) ?? null
+    const canPayWant = (Object.entries(latest.want) as Array<[Resource, number]>).every(([r, n]) => {
+      return (me?.resources[r] ?? 0) >= (n ?? 0)
+    })
+    if (!canPayWant) {
+      if (latest.toPlayerId === meId) {
+        declineTradeOffer({ offerId: latest.id })
+      }
+      return
+    }
+    setMarketTab('players')
+    setOpenMenu('market')
+  }, [state?.status, state?.tradeOffers?.length, state?.tradeOffers?.[state.tradeOffers.length - 1]?.id, meId])
 
   function playTone(freq: number, durationMs: number, type: OscillatorType, gainValue: number) {
     if (isMuted) return
@@ -703,7 +881,6 @@ function GameInner() {
 
   useEffect(() => {
     const update = () => {
-      if (topbarRef.current) setTopbarH(topbarRef.current.getBoundingClientRect().height)
       if (bottombarRef.current) setBottombarH(bottombarRef.current.getBoundingClientRect().height)
     }
     update()
@@ -722,20 +899,27 @@ function GameInner() {
   useEffect(() => {
     if (openMenu !== 'market') return
     if (!state) return
+    if (marketTab !== 'hole') return
     const ro: Resource[] = ['metal', 'gas', 'crystal', 'food', 'data']
 
     const pool = state.blackHolePool
     const availableReceive = ro.filter((r) => (pool?.[r] ?? 0) > 0)
+    const meLocal = state.players.find((p) => p.id === meId) ?? null
+    const availableGive = ro.filter((r) => (meLocal?.resources?.[r] ?? 0) > 0)
+    if (resetHoleSelectionRef.current) {
+      resetHoleSelectionRef.current = false
+      if (availableReceive.length) setMarketReceive(availableReceive[0]!)
+      if (availableGive.length) setMarketGive(availableGive[0]!)
+      return
+    }
+
     if (availableReceive.length && (pool?.[marketReceive] ?? 0) <= 0) {
       setMarketReceive(availableReceive[0]!)
     }
-
-    const meLocal = state.players.find((p) => p.id === meId) ?? null
-    const availableGive = ro.filter((r) => (meLocal?.resources?.[r] ?? 0) > 0)
     if (availableGive.length && (meLocal?.resources?.[marketGive] ?? 0) <= 0) {
       setMarketGive(availableGive[0]!)
     }
-  }, [openMenu, state, meId, marketReceive, marketGive])
+  }, [openMenu, state, meId, marketTab, marketReceive, marketGive])
 
   useEffect(() => {
     meIdRef.current = meId
@@ -879,6 +1063,26 @@ function GameInner() {
     return edge.id
   }
 
+  function canBuildHyperlaneEdge(state: GameState, playerId: string, edge: BoardEdge) {
+    if (state.phase !== 'main') return false
+    const isSetup = state.status === 'setup_phase_1' || state.status === 'setup_phase_2'
+    if (isSetup) {
+      if (!state.setup || state.setup.required !== 'hyperlane') return false
+      if (state.players[state.currentPlayerIndex]?.id !== playerId) return false
+      const counts = state.setup.placementsByPlayerId[playerId]
+      const limit = state.status === 'setup_phase_1' ? 1 : 2
+      if (!counts || counts.hyperlanesPlaced >= limit) return false
+    } else {
+      if (state.status !== 'playing') return false
+      const me = state.players.find((p) => p.id === playerId)
+      if (!me) return false
+      if (!canAfford(me.resources, { metal: 1, gas: 1 })) return false
+    }
+    if (state.hyperlanes.some((h) => h.edgeId === edge.id)) return false
+    if (!isConnectedVertex(state, playerId, edge.a) && !isConnectedVertex(state, playerId, edge.b)) return false
+    return true
+  }
+
   function canStartWarpAt(state: GameState, playerId: string, vertexId: string) {
     if (state.status !== 'playing') return false
     if (state.phase !== 'main') return false
@@ -927,6 +1131,7 @@ function GameInner() {
       if (d.kind === 'station') {
         if (canPlaceStationAt(st, pid, hit)) {
           buildStation(hit)
+          emitHoloPulseVertex(hit)
           playToneRef.current(196, 70, 'sawtooth', 0.05)
           return setDragBoth(null)
         }
@@ -939,6 +1144,7 @@ function GameInner() {
       if (d.kind === 'upgrade') {
         if (canUpgradeAt(st, pid, hit)) {
           upgradeStarbase(hit)
+          emitHoloPulseVertex(hit)
           playToneRef.current(196, 70, 'sawtooth', 0.05)
           return setDragBoth(null)
         }
@@ -964,6 +1170,7 @@ function GameInner() {
         const edgeId = canFinishHyperlane(st, pid, from, hit)
         if (edgeId) {
           buildHyperlane(edgeId)
+          emitHoloPulseEdge(edgeId)
           playToneRef.current(196, 70, 'sawtooth', 0.05)
           return setDragBoth(null)
         }
@@ -985,6 +1192,8 @@ function GameInner() {
         if (!from) return setDragBoth(null)
         if (canFinishWarp(st, from, hit)) {
           buildWarpLane({ fromVertexId: from, toVertexId: hit })
+          emitHoloPulseVertex(from)
+          emitHoloPulseVertex(hit)
           playToneRef.current(196, 70, 'sawtooth', 0.05)
           return setDragBoth(null)
         }
@@ -998,10 +1207,13 @@ function GameInner() {
     buildHyperlane,
     buildStation,
     buildWarpLane,
+    emitHoloPulseEdge,
+    emitHoloPulseVertex,
     resolveWormhole,
     upgradeStarbase,
     state,
     meId,
+    visualStyle,
     vById,
   ])
 
@@ -1011,6 +1223,28 @@ function GameInner() {
     if (!last) return
     if (lastEventIdRef.current === last.id) return
     lastEventIdRef.current = last.id
+
+    const myName = state.players.find((p) => p.id === meId)?.name ?? null
+    if (myName) {
+      const mine =
+        last.text.startsWith(`${myName}: Handelsangebot nicht möglich`) ||
+        last.text.startsWith(`${myName}: Handelsangebot abgelehnt`) ||
+        last.text.includes(`${myName} hat diese Runde bereits`)
+      if (mine) {
+        setEventToast({ text: last.text, untilMs: nowMs + 1700 })
+        if (openMenuRef.current === 'market') {
+          if (last.text.includes('Handelsangebot nicht möglich')) {
+            const n = state.tradeOffersThisRound?.[meId] ?? null
+            const suffix = typeof n === 'number' && n > 0 ? ` (${n}/10)` : ''
+            setDealNotice({ text: `Niemand hat die gewünschten Rohstoffe${suffix}`, kind: 'bad' })
+            pendingTradeOfferCreateRef.current = null
+          }
+          else if (last.text.includes('Zeitlimit')) setDealNotice({ text: 'Niemand hat angenommen', kind: 'bad' })
+          else setDealNotice({ text: last.text, kind: 'info' })
+        }
+        return
+      }
+    }
 
     if (last.text.includes('tauscht am Schwarzmarkt')) {
       playToneRef.current(523, 80, 'triangle', 0.06)
@@ -1036,6 +1270,75 @@ function GameInner() {
       return
     }
   }, [state?.events.length])
+
+  useEffect(() => {
+    if (!state) return
+    if (!openMenuRef.current || openMenuRef.current !== 'market') return
+
+    const currentTurnPlayerId = state.players[state.currentPlayerIndex]?.id ?? null
+    if (!currentTurnPlayerId) return
+
+    const latest = state.tradeOffers
+      .slice()
+      .reverse()
+      .find((o) => o.fromPlayerId === currentTurnPlayerId) ?? null
+    if (!latest) return
+
+    const prev = lastTradeOfferStatusRef.current
+    const prevId = prev?.offerId ?? null
+    const prevStatus = prev?.status ?? null
+    const nextStatus = latest.status
+
+    if (prevId !== latest.id) {
+      lastTradeOfferStatusRef.current = { offerId: latest.id, status: nextStatus }
+      return
+    }
+    if (prevStatus === nextStatus) return
+    lastTradeOfferStatusRef.current = { offerId: latest.id, status: nextStatus }
+
+    if (nextStatus === 'accepted') {
+      const isMine = currentTurnPlayerId === meId
+      const isMyAccept = Boolean(pendingTradeAcceptRef.current && pendingTradeAcceptRef.current === latest.id)
+      if (isMine) setMarketTab('players')
+      if (!isMine && !isMyAccept) return
+      setDealNotice({ text: 'Tausch erfolgreich', kind: 'ok' })
+      if (isMine) {
+        setOfferGive({})
+        setOfferWant({})
+        pendingTradeOfferCreateRef.current = null
+      }
+      window.setTimeout(() => {
+        const shouldClose =
+          currentTurnPlayerId === meId || (pendingTradeAcceptRef.current && pendingTradeAcceptRef.current === latest.id)
+        pendingTradeAcceptRef.current = null
+        if (shouldClose && openMenuRef.current === 'market') setOpenMenu(null)
+      }, 1000)
+      return
+    }
+    if ((nextStatus === 'expired' || nextStatus === 'declined') && currentTurnPlayerId === meId) {
+      setDealNotice({ text: 'Niemand hat angenommen', kind: 'bad' })
+      return
+    }
+  }, [state?.tradeOffers?.length, state?.tradeOffers?.[state.tradeOffers.length - 1]?.id, state?.tradeOffers?.[state.tradeOffers.length - 1]?.status, state?.currentPlayerIndex])
+
+  useEffect(() => {
+    if (!state) return
+    const pending = pendingTradeOfferCreateRef.current
+    if (!pending) return
+    if (!meId) return
+
+    const openMine = state.tradeOffers.some((o) => o.status === 'open' && o.fromPlayerId === meId && o.createdAt >= pending.startedAtMs - 50)
+    if (openMine) {
+      pendingTradeOfferCreateRef.current = null
+      setOfferGive({})
+      setOfferWant({})
+      return
+    }
+
+    if (Date.now() - pending.startedAtMs > 1600) {
+      pendingTradeOfferCreateRef.current = null
+    }
+  }, [state?.tradeOffers.length, meId])
 
   useEffect(() => {
     setNowMs(Date.now())
@@ -1088,8 +1391,60 @@ function GameInner() {
 
     ctx.clearRect(0, 0, rect.width, rect.height)
 
+    const isHolo = visualStyle === 'holo'
+    if (isHolo) {
+      const bg = ctx.createLinearGradient(0, 0, 0, rect.height)
+      bg.addColorStop(0, 'rgba(2, 6, 23, 1)')
+      bg.addColorStop(1, 'rgba(1, 3, 10, 1)')
+      ctx.fillStyle = bg
+      ctx.fillRect(0, 0, rect.width, rect.height)
+
+      let seed = 0
+      const sid = state.id
+      for (let i = 0; i < sid.length; i++) seed = (seed * 31 + sid.charCodeAt(i)) >>> 0
+      const rand01 = (i: number) => {
+        let x = (seed ^ (i * 0x9e3779b1)) >>> 0
+        x ^= x << 13
+        x ^= x >>> 17
+        x ^= x << 5
+        return ((x >>> 0) % 100000) / 100000
+      }
+
+      const driftX = (nowMs / 60000) % 1
+      const driftY = (nowMs / 85000) % 1
+      const pxOffX = -panRef.current.x * 0.18
+      const pxOffY = -panRef.current.y * 0.18
+
+      ctx.save()
+      ctx.globalAlpha = 0.9
+      for (let i = 0; i < 120; i++) {
+        const rx = (rand01(i * 2 + 1) + driftX) % 1
+        const ry = (rand01(i * 2 + 2) + driftY) % 1
+        const x = rx * rect.width + pxOffX
+        const y = ry * rect.height + pxOffY
+        const r = 0.6 + rand01(i * 7 + 3) * 1.6
+        const a = 0.15 + rand01(i * 11 + 4) * 0.45
+        ctx.fillStyle = `rgba(226, 232, 240, ${a})`
+        ctx.beginPath()
+        ctx.arc(((x % rect.width) + rect.width) % rect.width, ((y % rect.height) + rect.height) % rect.height, r, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
+    }
+
     const isOuter = (t: BoardTile) => axialDistance(t.q, t.r) === state.board.radius
     const rotateActive = Boolean(rotateAnim && nowMs < rotateAnim.startMs + rotateAnim.durationMs)
+    const interactionBoost = Boolean(isHolo && (mode !== 'none' || drag || hoverVertexId || hoverEdgeId || pendingVertex || pendingWarpFrom))
+
+    const boardDimFilter = isHolo ? 'saturate(0.45) brightness(0.74) contrast(1.08)' : 'saturate(0.6) brightness(0.82) contrast(1.06)'
+    const boardTintBase = selectedPlayerId ? (isHolo ? 0.14 : 0.12) : isHolo ? 0.24 : 0.18
+    const boardTintA = Math.min(0.32, boardTintBase + (interactionBoost ? 0.03 : 0))
+    const playerPopFilter = isHolo ? 'saturate(1.35) brightness(1.12) contrast(1.06)' : 'saturate(1.22) brightness(1.08) contrast(1.04)'
+
+    const tileOutlineBack = isHolo ? 'rgba(10, 20, 34, 0.72)' : 'rgba(10, 20, 34, 0.88)'
+    const tileOutlineBackW = isHolo ? 2.7 : 3.2
+    const tileOutlineFront = isHolo ? 'rgba(182, 216, 232, 0.22)' : 'rgba(182, 216, 232, 0.55)'
+    const tileOutlineFrontW = isHolo ? 0.9 : 1.3
 
     ctx.lineWidth = 2
     ctx.globalAlpha = 1
@@ -1100,11 +1455,17 @@ function GameInner() {
     for (const tile of state.board.tiles) {
       ctx.save()
       ctx.globalAlpha = selectedPlayerId && tile.biome !== 'singularity' && tile.id !== state.blackHoleTileId ? 0.26 : 1
-      const corners = tile.cornerVertexIds.map((id) => vById.get(id)!).map(toPx)
+      const cornerVerts = tile.cornerVertexIds.map((id) => vById.get(id)).filter((v): v is BoardVertex => Boolean(v))
+      if (cornerVerts.length !== tile.cornerVertexIds.length) {
+        ctx.restore()
+        continue
+      }
+      const corners = cornerVerts.map(toPx)
       ctx.beginPath()
       ctx.moveTo(corners[0]!.x, corners[0]!.y)
       for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y)
       ctx.closePath()
+      ctx.filter = boardDimFilter
       ctx.fillStyle = tileBgColor(tile.biome)
       ctx.fill()
       if (tile.id === state.blackHoleTileId && tile.biome !== 'singularity') {
@@ -1161,6 +1522,13 @@ function GameInner() {
         }
         ctx.restore()
       }
+
+      ctx.save()
+      ctx.globalAlpha = boardTintA
+      ctx.fillStyle = 'rgba(2, 8, 18, 1)'
+      ctx.fill()
+      ctx.restore()
+      ctx.filter = 'none'
 
       if (tile.id === state.blackHoleTileId) {
         const boosted = nowMs < bhBoostUntilMs
@@ -1235,11 +1603,11 @@ function GameInner() {
       for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y)
       ctx.closePath()
 
-      ctx.strokeStyle = 'rgba(10, 20, 34, 0.88)'
-      ctx.lineWidth = 3.2
+      ctx.strokeStyle = tileOutlineBack
+      ctx.lineWidth = tileOutlineBackW
       ctx.stroke()
-      ctx.strokeStyle = 'rgba(182, 216, 232, 0.55)'
-      ctx.lineWidth = 1.3
+      ctx.strokeStyle = tileOutlineFront
+      ctx.lineWidth = tileOutlineFrontW
       ctx.stroke()
       ctx.lineWidth = 2
 
@@ -1296,6 +1664,7 @@ function GameInner() {
           else ctx.lineTo(px, py)
         }
         ctx.closePath()
+        ctx.filter = boardDimFilter
         ctx.fillStyle = tileBgColor(e.biome)
         ctx.fill()
         ctx.save()
@@ -1322,8 +1691,14 @@ function GameInner() {
           drawBiomeIllustration(ctx, e.biome, { x, y }, r * 0.9, `rot:${e.biome}:${e.numberToken ?? ''}:${x.toFixed(2)}:${y.toFixed(2)}`)
         }
         ctx.restore()
-        ctx.lineWidth = 2.2
-        ctx.strokeStyle = 'rgba(10, 20, 34, 0.78)'
+        ctx.save()
+        ctx.globalAlpha = boardTintA
+        ctx.fillStyle = 'rgba(2, 8, 18, 1)'
+        ctx.fill()
+        ctx.restore()
+        ctx.filter = 'none'
+        ctx.lineWidth = isHolo ? 2.1 : 2.2
+        ctx.strokeStyle = isHolo ? 'rgba(10, 20, 34, 0.68)' : 'rgba(10, 20, 34, 0.78)'
         ctx.stroke()
         ctx.restore()
         if (e.numberToken) {
@@ -1360,7 +1735,9 @@ function GameInner() {
           for (const e of rotateFlash.entries) {
             const dest = state.board.tiles.find((t) => t.id === e.destTileId)
             if (!dest) continue
-            const corners = dest.cornerVertexIds.map((id) => vById.get(id)!).map(toPx)
+            const cornerVerts = dest.cornerVertexIds.map((id) => vById.get(id)).filter((v): v is BoardVertex => Boolean(v))
+            if (cornerVerts.length !== dest.cornerVertexIds.length) continue
+            const corners = cornerVerts.map(toPx)
             const c = toPx(dest.center)
             const outerR = Math.hypot(corners[0]!.x - c.x, corners[0]!.y - c.y)
             const inscribed = outerR * 0.86
@@ -1463,7 +1840,57 @@ function GameInner() {
       ctx.restore()
     }
 
-    ctx.lineWidth = 5.4
+    if (visualStyle === 'holo') {
+      if (!holoNoisePatternRef.current) {
+        const n = document.createElement('canvas')
+        n.width = 128
+        n.height = 128
+        const nctx = n.getContext('2d')
+        if (nctx) {
+          const img = nctx.createImageData(n.width, n.height)
+          for (let i = 0; i < img.data.length; i += 4) {
+            const v = Math.floor(Math.random() * 256)
+            img.data[i] = v
+            img.data[i + 1] = v
+            img.data[i + 2] = v
+            img.data[i + 3] = Math.floor(Math.random() * 60)
+          }
+          nctx.putImageData(img, 0, 0)
+          holoNoisePatternRef.current = ctx.createPattern(n, 'repeat')
+        }
+      }
+
+      ctx.save()
+      ctx.globalCompositeOperation = 'screen'
+
+      const pat = holoNoisePatternRef.current
+      if (pat) {
+        ctx.globalAlpha = 0.05
+        ctx.fillStyle = pat
+        ctx.fillRect(0, 0, rect.width, rect.height)
+      }
+
+      ctx.globalCompositeOperation = 'source-over'
+      const vg = ctx.createRadialGradient(
+        rect.width / 2,
+        rect.height / 2,
+        rect.height * 0.12,
+        rect.width / 2,
+        rect.height / 2,
+        rect.height * 0.9,
+      )
+      vg.addColorStop(0, 'rgba(0,0,0,0)')
+      vg.addColorStop(1, 'rgba(0,0,0,0.55)')
+      ctx.globalAlpha = 1
+      ctx.fillStyle = vg
+      ctx.fillRect(0, 0, rect.width, rect.height)
+
+      ctx.restore()
+    }
+
+    ctx.save()
+    ctx.filter = playerPopFilter
+    const laneBoost = interactionBoost ? 1.18 : 1
     for (const h of state.hyperlanes) {
       const e = state.board.edges.find((x) => x.id === h.edgeId)
       if (!e) continue
@@ -1476,16 +1903,30 @@ function GameInner() {
       const clr = p ? playerColor(p.color) : '#00f5ff'
       const isSelected = selectedPlayerId ? h.playerId === selectedPlayerId : false
       ctx.globalAlpha = selectedPlayerId ? (isSelected ? 1 : 0.14) : 1
-      ctx.strokeStyle = 'rgba(6, 10, 18, 0.95)'
-      ctx.lineWidth = 8.4
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)'
+      ctx.lineWidth = isHolo ? 10.6 : 8.4
       ctx.beginPath()
       ctx.moveTo(pa.x, pa.y)
       ctx.lineTo(pb.x, pb.y)
       ctx.stroke()
+      if (isHolo) {
+        ctx.save()
+        ctx.strokeStyle = clr
+        ctx.lineWidth = 8.2
+        ctx.shadowColor = clr
+        ctx.shadowBlur = 30 * laneBoost
+        ctx.globalAlpha *= 0.55
+        ctx.beginPath()
+        ctx.moveTo(pa.x, pa.y)
+        ctx.lineTo(pb.x, pb.y)
+        ctx.stroke()
+        ctx.restore()
+      }
+
       ctx.strokeStyle = clr
-      ctx.lineWidth = 5.4
-      ctx.shadowColor = isSelected ? clr : 'rgba(0,0,0,0)'
-      ctx.shadowBlur = isSelected ? 16 : 0
+      ctx.lineWidth = isHolo ? 6.2 : 5.4
+      ctx.shadowColor = clr
+      ctx.shadowBlur = (isSelected ? 18 : isHolo ? 10 : 0) * laneBoost
       ctx.beginPath()
       ctx.moveTo(pa.x, pa.y)
       ctx.lineTo(pb.x, pb.y)
@@ -1504,7 +1945,6 @@ function GameInner() {
         outer = Math.max(outer, d)
       }
 
-      ctx.lineWidth = 5
       for (const w of state.warpLanes) {
         const a = vById.get(w.fromVertexId)
         const b = vById.get(w.toVertexId)
@@ -1530,16 +1970,29 @@ function GameInner() {
         const clr = p ? playerColor(p.color) : '#00f5ff'
         const isSelected = selectedPlayerId ? w.playerId === selectedPlayerId : false
         ctx.globalAlpha = selectedPlayerId ? (isSelected ? 1 : 0.14) : 1
-        ctx.strokeStyle = 'rgba(6, 10, 18, 0.95)'
-        ctx.lineWidth = 8.4
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)'
+        ctx.lineWidth = isHolo ? 10.6 : 8.4
         ctx.beginPath()
         ctx.moveTo(start.x, start.y)
         ctx.quadraticCurveTo(ctrl.x, ctrl.y, end.x, end.y)
         ctx.stroke()
+        if (isHolo) {
+          ctx.save()
+          ctx.strokeStyle = clr
+          ctx.lineWidth = 8.0
+          ctx.shadowColor = clr
+          ctx.shadowBlur = 32 * laneBoost
+          ctx.globalAlpha *= 0.5
+          ctx.beginPath()
+          ctx.moveTo(start.x, start.y)
+          ctx.quadraticCurveTo(ctrl.x, ctrl.y, end.x, end.y)
+          ctx.stroke()
+          ctx.restore()
+        }
         ctx.strokeStyle = clr
-        ctx.lineWidth = 5
-        ctx.shadowColor = isSelected ? clr : 'rgba(0,0,0,0)'
-        ctx.shadowBlur = isSelected ? 18 : 0
+        ctx.lineWidth = isHolo ? 5.8 : 5
+        ctx.shadowColor = clr
+        ctx.shadowBlur = (isSelected ? 20 : isHolo ? 10 : 0) * laneBoost
         ctx.beginPath()
         ctx.moveTo(start.x, start.y)
         ctx.quadraticCurveTo(ctrl.x, ctrl.y, end.x, end.y)
@@ -1565,60 +2018,73 @@ function GameInner() {
       const ringR = (size / 2) * 0.92
       ctx.save()
       ctx.globalAlpha = selectedPlayerId ? (isSelected ? 1 : 0.22) : 1
-      const backW = 8.4
-      const frontW = 5.4
+      const buildingBoost = interactionBoost ? 1.15 : 1
+      const backW = isHolo ? 10.6 : 8.4
+      const frontW = isHolo ? 6.2 : 5.4
+
+      if (isHolo) {
+        ctx.save()
+        ctx.globalAlpha *= 0.65
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.9)'
+        ctx.shadowBlur = 22 * buildingBoost
+        ctx.beginPath()
+        ctx.ellipse(c.x + 2, c.y + ringR * 0.45, ringR * 0.9, ringR * 0.55, 0, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      }
       if (s.level === 'starbase') {
         const innerR = ringR - 7
         ctx.beginPath()
-        ctx.strokeStyle = 'rgba(6, 10, 18, 0.95)'
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)'
         ctx.lineWidth = backW
         ctx.shadowColor = 'rgba(0,0,0,0.65)'
-        ctx.shadowBlur = 12
+        ctx.shadowBlur = (isHolo ? 18 : 12) * buildingBoost
         ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.beginPath()
-        ctx.shadowBlur = 10
+        ctx.shadowBlur = (isHolo ? 16 : 10) * buildingBoost
         ctx.arc(c.x, c.y, innerR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.strokeStyle = playerClr
         ctx.lineWidth = frontW
         ctx.beginPath()
         ctx.shadowColor = isSelected ? playerClr : 'rgba(0,0,0,0.65)'
-        ctx.shadowBlur = isSelected ? 18 : 12
+        ctx.shadowBlur = (isSelected ? 22 : isHolo ? 18 : 12) * buildingBoost
         ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.beginPath()
-        ctx.shadowBlur = isSelected ? 16 : 10
+        ctx.shadowBlur = (isSelected ? 20 : isHolo ? 16 : 10) * buildingBoost
         ctx.arc(c.x, c.y, innerR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.shadowBlur = 0
       } else {
         ctx.beginPath()
-        ctx.strokeStyle = 'rgba(6, 10, 18, 0.95)'
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)'
         ctx.lineWidth = backW
         ctx.shadowColor = 'rgba(0,0,0,0.65)'
-        ctx.shadowBlur = 12
+        ctx.shadowBlur = (isHolo ? 18 : 12) * buildingBoost
         ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.strokeStyle = playerClr
         ctx.lineWidth = frontW
         ctx.beginPath()
         ctx.shadowColor = isSelected ? playerClr : 'rgba(0,0,0,0.65)'
-        ctx.shadowBlur = isSelected ? 18 : 12
+        ctx.shadowBlur = (isSelected ? 22 : isHolo ? 18 : 12) * buildingBoost
         ctx.arc(c.x, c.y, ringR, 0, Math.PI * 2)
         ctx.stroke()
         ctx.shadowBlur = 0
       }
       if (img && img.complete && img.naturalWidth > 0) {
         ctx.shadowColor = 'rgba(0,0,0,0.55)'
-        ctx.shadowBlur = 6
+        ctx.shadowBlur = (isHolo ? 10 : 6) * buildingBoost
         ctx.drawImage(img, c.x - size / 2, c.y - size / 2, size, size)
       } else {
         const r = s.level === 'starbase' ? 8 : 6
         ctx.beginPath()
         ctx.fillStyle = playerClr
         ctx.shadowColor = ctx.fillStyle
-        ctx.shadowBlur = 12
+        ctx.shadowBlur = (isHolo ? 18 : 12) * buildingBoost
         ctx.arc(c.x, c.y, r, 0, Math.PI * 2)
         ctx.fill()
         ctx.shadowBlur = 0
@@ -1628,15 +2094,89 @@ function GameInner() {
       }
       ctx.restore()
     }
+    ctx.restore()
+
+    if (visualStyle === 'holo' && holoFxRef.current.length) {
+      const keep: typeof holoFxRef.current = []
+      for (const fx of holoFxRef.current) {
+        const age = nowMs - fx.startMs
+        const dur = 850
+        if (age < 0 || age > dur) continue
+        const t = age / dur
+        const a = Math.max(0, 1 - t)
+        keep.push(fx)
+
+        if (fx.kind === 'pulse_vertex') {
+          const v = vById.get(fx.vertexId)
+          if (!v) continue
+          const p = toPx(v)
+          const r = 10 + 28 * t
+          ctx.save()
+          ctx.globalAlpha = 0.85 * a * a
+          ctx.strokeStyle = fx.color
+          ctx.lineWidth = 3
+          ctx.shadowColor = fx.color
+          ctx.shadowBlur = 18 * a
+          ctx.beginPath()
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.globalAlpha = 0.12 * a
+          ctx.fillStyle = fx.color
+          ctx.beginPath()
+          ctx.arc(p.x, p.y, r - 4, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.restore()
+          continue
+        }
+
+        if (fx.kind === 'pulse_edge') {
+          const e = state.board.edges.find((x) => x.id === fx.edgeId)
+          if (!e) continue
+          const va = vById.get(e.a)
+          const vb = vById.get(e.b)
+          if (!va || !vb) continue
+          const pa = toPx(va)
+          const pb = toPx(vb)
+          ctx.save()
+          ctx.globalAlpha = 0.7 * a * a
+          ctx.strokeStyle = fx.color
+          ctx.lineWidth = 6
+          ctx.lineCap = 'round'
+          ctx.shadowColor = fx.color
+          ctx.shadowBlur = 22 * a
+          ctx.setLineDash([18, 12])
+          ctx.lineDashOffset = -nowMs / 22
+          ctx.beginPath()
+          ctx.moveTo(pa.x, pa.y)
+          ctx.lineTo(pb.x, pb.y)
+          ctx.stroke()
+          ctx.setLineDash([])
+          ctx.restore()
+        }
+      }
+      holoFxRef.current = keep
+    }
 
     if (hoverVertexId) {
       const hv = vById.get(hoverVertexId)
       if (hv) {
         const p = toPx(hv)
+        const hoverKind = dragRef.current?.kind ?? mode
+        const hoverAllowed =
+          state.phase === 'main' && isMyTurn && (hoverKind === 'station' || hoverKind === 'upgrade')
+            ? hoverKind === 'station'
+              ? canPlaceStationAt(state, meId, hoverVertexId)
+              : canUpgradeAt(state, meId, hoverVertexId)
+            : null
         ctx.save()
         ctx.beginPath()
         ctx.fillStyle = 'rgba(241, 245, 249, 0.18)'
-        ctx.strokeStyle = 'rgba(241, 245, 249, 0.85)'
+        ctx.strokeStyle =
+          hoverAllowed === null
+            ? 'rgba(241, 245, 249, 0.85)'
+            : hoverAllowed
+              ? 'rgba(0, 245, 255, 0.95)'
+              : 'rgba(248, 113, 113, 0.95)'
         ctx.lineWidth = 2
         ctx.arc(p.x, p.y, 10, 0, Math.PI * 2)
         ctx.fill()
@@ -1646,29 +2186,73 @@ function GameInner() {
     }
 
     const activeDrag = dragRef.current
-    const showHints = isMyTurn && ((activeDrag && state.phase === 'main') || (mode === 'hyperlane' && state.phase === 'main'))
+    const showHints =
+      isMyTurn &&
+      state.phase === 'main' &&
+      (Boolean(activeDrag) || mode === 'hyperlane' || mode === 'station' || mode === 'upgrade')
     if (showHints) {
       ctx.save()
       ctx.shadowBlur = 0
-      ctx.lineWidth = 2
       const blink = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(nowMs / 140))
-      ctx.fillStyle = `rgba(0, 245, 255, ${0.08 + 0.10 * blink})`
-      ctx.strokeStyle = `rgba(0, 245, 255, ${0.18 + 0.25 * blink})`
+      const okOutlineA = 0.55 + 0.25 * blink
+      const okInnerA = 0.35 + 0.45 * blink
+      const okFillA = 0.05 + 0.07 * blink
 
-      const drawVertex = (vertexId: string) => {
+      const drawVertexHint = (vertexId: string, isAllowed: boolean) => {
         const v = vById.get(vertexId)
         if (!v) return
         const p = toPx(v)
+        const r = 11
+        if (isAllowed) {
+          ctx.save()
+          ctx.beginPath()
+          ctx.strokeStyle = `rgba(6, 10, 18, ${okOutlineA})`
+          ctx.lineWidth = 9
+          ctx.arc(p.x, p.y, r + 1, 0, Math.PI * 2)
+          ctx.stroke()
+
+          ctx.beginPath()
+          ctx.fillStyle = `rgba(0, 245, 255, ${okFillA})`
+          ctx.arc(p.x, p.y, r - 1, 0, Math.PI * 2)
+          ctx.fill()
+
+          ctx.beginPath()
+          ctx.strokeStyle = `rgba(0, 245, 255, ${okInnerA})`
+          ctx.lineWidth = 5
+          ctx.shadowColor = 'rgba(0, 245, 255, 0.55)'
+          ctx.shadowBlur = 18
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.shadowBlur = 0
+          ctx.restore()
+          return
+        }
+
+        ctx.save()
         ctx.beginPath()
-        ctx.arc(p.x, p.y, 10, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.05)'
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.26)'
+        ctx.lineWidth = 2
+        ctx.arc(p.x, p.y, r - 1, 0, Math.PI * 2)
         ctx.fill()
         ctx.stroke()
+
+        ctx.beginPath()
+        ctx.strokeStyle = 'rgba(248, 113, 113, 0.55)'
+        ctx.lineWidth = 2.5
+        ctx.lineCap = 'round'
+        ctx.moveTo(p.x - 7, p.y - 7)
+        ctx.lineTo(p.x + 7, p.y + 7)
+        ctx.stroke()
+        ctx.restore()
       }
 
       if (activeDrag?.kind === 'blackhole') {
         for (const tile of state.board.tiles) {
           if (tile.biome === 'singularity') continue
-          const corners = tile.cornerVertexIds.map((id) => vById.get(id)!).map(toPx)
+          const cornerVerts = tile.cornerVertexIds.map((id) => vById.get(id)).filter((v): v is BoardVertex => Boolean(v))
+          if (cornerVerts.length !== tile.cornerVertexIds.length) continue
+          const corners = cornerVerts.map(toPx)
           ctx.beginPath()
           ctx.moveTo(corners[0]!.x, corners[0]!.y)
           for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y)
@@ -1677,76 +2261,85 @@ function GameInner() {
           ctx.stroke()
         }
       } else if (state.phase === 'main') {
-        if (activeDrag?.kind === 'station') {
+        if (activeDrag?.kind === 'station' || mode === 'station') {
           for (const v of state.board.vertices) {
-            if (canPlaceStationAt(state, meId, v.id)) drawVertex(v.id)
+            const allowed = canPlaceStationAt(state, meId, v.id)
+            drawVertexHint(v.id, allowed)
           }
-        } else if (activeDrag?.kind === 'upgrade') {
+        } else if (activeDrag?.kind === 'upgrade' || mode === 'upgrade') {
           for (const s of state.stations) {
-            if (canUpgradeAt(state, meId, s.vertexId)) drawVertex(s.vertexId)
+            if (s.playerId !== meId) continue
+            const allowed = canUpgradeAt(state, meId, s.vertexId)
+            drawVertexHint(s.vertexId, allowed)
           }
-        } else if (activeDrag?.kind === 'hyperlane' || mode === 'hyperlane') {
-          const from = activeDrag?.kind === 'hyperlane' && activeDrag.step === 2 ? activeDrag.startVertexId : mode === 'hyperlane' ? pendingVertex : null
-          if (!from) {
-            for (const v of state.board.vertices) {
-              if (canStartHyperlaneAt(state, meId, v.id)) drawVertex(v.id)
-            }
-          } else {
-            drawVertex(from)
-            const neigh = neighborsByVertex.get(from) ?? []
-            for (const n of neigh) {
-              const edgeId = canFinishHyperlane(state, meId, from, n)
-              if (!edgeId) continue
-              drawVertex(n)
-              const a = vById.get(from)
-              const b = vById.get(n)
+        } else if (mode === 'hyperlane') {
+          const validEdges = state.board.edges.filter((e) => canBuildHyperlaneEdge(state, meId, e))
+          if (validEdges.length) {
+            for (const e of validEdges) {
+              const a = vById.get(e.a)
+              const b = vById.get(e.b)
               if (!a || !b) continue
               const pa = toPx(a)
               const pb = toPx(b)
               ctx.save()
-              ctx.globalAlpha = 0.25 + 0.55 * blink
-              ctx.lineWidth = 3
-              ctx.setLineDash([10, 10])
+              ctx.strokeStyle = `rgba(6, 10, 18, ${okOutlineA})`
+              ctx.lineWidth = 11
+              ctx.lineCap = 'round'
               ctx.beginPath()
               ctx.moveTo(pa.x, pa.y)
               ctx.lineTo(pb.x, pb.y)
               ctx.stroke()
+              ctx.strokeStyle = `rgba(0, 245, 255, ${okInnerA})`
+              ctx.lineWidth = 6
+              ctx.shadowColor = 'rgba(0, 245, 255, 0.55)'
+              ctx.shadowBlur = 18
+              ctx.beginPath()
+              ctx.moveTo(pa.x, pa.y)
+              ctx.lineTo(pb.x, pb.y)
+              ctx.stroke()
+              ctx.shadowBlur = 0
               ctx.restore()
             }
-            if (hoverVertexId) {
-              const edgeId = canFinishHyperlane(state, meId, from, hoverVertexId)
-              if (edgeId) {
-                const a = vById.get(from)
-                const b = vById.get(hoverVertexId)
-                if (a && b) {
-                  const pa = toPx(a)
-                  const pb = toPx(b)
-                  ctx.save()
-                  ctx.globalAlpha = 0.5 + 0.5 * blink
-                  ctx.lineWidth = 5
-                  ctx.setLineDash([12, 10])
-                  ctx.shadowColor = 'rgba(0, 245, 255, 0.55)'
-                  ctx.shadowBlur = 18
-                  ctx.beginPath()
-                  ctx.moveTo(pa.x, pa.y)
-                  ctx.lineTo(pb.x, pb.y)
-                  ctx.stroke()
-                  ctx.shadowBlur = 0
-                  ctx.restore()
-                }
+          }
+
+          if (hoverEdgeId) {
+            const e = state.board.edges.find((x) => x.id === hoverEdgeId)
+            if (e) {
+              const a = vById.get(e.a)
+              const b = vById.get(e.b)
+              if (a && b) {
+                const pa = toPx(a)
+                const pb = toPx(b)
+                ctx.save()
+                ctx.lineCap = 'round'
+                ctx.setLineDash([14, 10])
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'
+                ctx.lineWidth = 12
+                ctx.shadowColor = 'rgba(255, 255, 255, 0.55)'
+                ctx.shadowBlur = 16
+                ctx.beginPath()
+                ctx.moveTo(pa.x, pa.y)
+                ctx.lineTo(pb.x, pb.y)
+                ctx.stroke()
+                ctx.setLineDash([])
+                ctx.shadowBlur = 0
+                ctx.restore()
               }
             }
           }
         } else if (activeDrag?.kind === 'warp') {
           if (activeDrag.step === 1) {
             for (const s of state.stations) {
-              if (canStartWarpAt(state, meId, s.vertexId)) drawVertex(s.vertexId)
+              if (s.playerId !== meId) continue
+              drawVertexHint(s.vertexId, canStartWarpAt(state, meId, s.vertexId))
             }
           } else {
             const from = activeDrag.startVertexId
-            if (from) drawVertex(from)
+            if (from) drawVertexHint(from, true)
             for (const v of state.board.vertices) {
-              if (from && canFinishWarp(state, from, v.id)) drawVertex(v.id)
+              if (!from) continue
+              const allowed = canFinishWarp(state, from, v.id)
+              if (allowed) drawVertexHint(v.id, true)
             }
           }
         }
@@ -1766,10 +2359,12 @@ function GameInner() {
     meId,
     pendingVertex,
     hoverVertexId,
+    hoverEdgeId,
     neighborsByVertex,
     eByKey,
     nowMs,
     ringRotateUntilMs,
+    visualStyle,
   ])
 
   useEffect(() => {
@@ -1910,6 +2505,75 @@ function GameInner() {
     productionAnimTimeoutsRef.current.push(t2)
   }, [state])
 
+  useEffect(() => {
+    if (!state) return
+    const pending = pendingBlackHoleTradeRef.current
+    if (!pending) return
+
+    const meLocal = state.players.find((p) => p.id === meId) ?? null
+    if (!meLocal) return
+
+    const giveHave = meLocal.resources[pending.give] ?? 0
+    const receiveHave = meLocal.resources[pending.receive] ?? 0
+    const poolGive = state.blackHolePool[pending.give] ?? 0
+    const poolReceive = state.blackHolePool[pending.receive] ?? 0
+
+    const ok =
+      giveHave - pending.before.giveHave === -pending.rate &&
+      receiveHave - pending.before.receiveHave === 1 &&
+      poolGive - pending.before.poolGive === pending.rate &&
+      poolReceive - pending.before.poolReceive === -1
+
+    if (!ok) {
+      if (Date.now() - pending.startedAtMs > 2500) {
+        pendingBlackHoleTradeRef.current = null
+      }
+      return
+    }
+
+    pendingBlackHoleTradeRef.current = null
+
+    const toEl = cornerRefByPlayerId.current[meId] ?? null
+    const toRect = toEl?.getBoundingClientRect() ?? null
+    const to = toRect ? { x: toRect.left + toRect.width / 2, y: toRect.top + toRect.height / 2 } : null
+
+    const tr = transformRef.current
+    const bhTile = state.board.tiles.find((t) => t.id === state.blackHoleTileId) ?? null
+    const from =
+      tr && bhTile
+        ? (() => {
+            const px = (bhTile.center.x - tr.centerX) * tr.scale + tr.width / 2 + tr.panX
+            const py = (bhTile.center.y - tr.centerY) * tr.scale + tr.height / 2 + tr.panY
+            return { x: tr.canvasRect.left + px, y: tr.canvasRect.top + py }
+          })()
+        : tr
+          ? { x: tr.canvasRect.left + tr.width / 2, y: tr.canvasRect.top + tr.height / 2 }
+          : null
+
+    if (to && from) {
+      const addFx = (resource: Resource, a: { x: number; y: number }, b: { x: number; y: number }) => {
+        const ev = { id: Math.random().toString(16).slice(2), resource, fromX: a.x, fromY: a.y, toX: b.x, toY: b.y }
+        setResourceFx((fx) => fx.concat(ev))
+        window.setTimeout(() => setResourceFx((fx) => fx.filter((x) => x.id !== ev.id)), 950)
+      }
+      addFx(pending.receive, from, to)
+      window.setTimeout(() => addFx(pending.give, to, from), 120)
+    }
+
+    setDealNotice({ text: 'Tausch erfolgreich', kind: 'ok' })
+    window.setTimeout(() => {
+      if (openMenuRef.current === 'market') setOpenMenu(null)
+    }, 1000)
+  }, [state?.blackHolePool, state?.players, state?.blackHoleTileId, state?.board?.tiles, meId])
+
+  const turnEventText = useMemo(() => {
+    if (!state) return ''
+    const turnEvents = state.events.filter((e) => e.timestamp >= state.turnStartedAt)
+    const primary = turnEvents[turnEvents.length - 1]?.text ?? ''
+    const secondary = turnEvents[turnEvents.length - 2]?.text ?? ''
+    return [primary, secondary].filter(Boolean).join(' · ')
+  }, [state?.events, state?.turnStartedAt])
+
   const remainingTurnMs = state ? Math.max(0, (state.turnLimitMs ?? 45000) - (nowMs - state.turnStartedAt)) : 0
   const remainingSec = Math.ceil(remainingTurnMs / 1000)
   const prevRemainingSecRef = useRef(remainingSec)
@@ -1921,9 +2585,31 @@ function GameInner() {
     prevRemainingSecRef.current = remainingSec
   }, [remainingSec, state?.status])
 
-  if (!state) {
-    return <div className="page game-page"><div className="loading">Lädt…</div></div>
-  }
+  useEffect(() => {
+    const update = () => {
+      const el = eventTextRef.current
+      if (!el) return setEventMarquee(false)
+      const parent = el.parentElement
+      if (!parent) return setEventMarquee(false)
+      setEventMarquee(el.scrollWidth > parent.clientWidth + 1)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [turnEventText])
+
+  useEffect(() => {
+    const update = () => {
+      const rightDock = rightDockRef.current
+      if (!rightDock) return setEventRightInset(220)
+      const rect = rightDock.getBoundingClientRect()
+      const inset = Math.max(80, Math.round(window.innerWidth - rect.left + 8))
+      setEventRightInset(inset)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [lang, remainingSec, state?.round, state?.maxRounds, state?.status, state?.setup?.required])
 
   const me = state.players.find((p) => p.id === meId) ?? null
   const isSetup = state.status === 'setup_phase_1' || state.status === 'setup_phase_2'
@@ -2000,17 +2686,78 @@ function GameInner() {
     marketRate !== null &&
     (me?.resources[marketGive] ?? 0) >= marketRate
   const canBuildAnyNow = Boolean(canBuildStationNow || canBuildHyperlaneNow || canUpgradeNow || canWarpNow)
-  const corners = [
-    state.players[0] ?? null,
-    state.players[1] ?? null,
-    state.players[2] ?? null,
-    state.players[3] ?? null,
-  ]
+  const cornerSlots = ['lt', 'rt', 'rb', 'lb'] as const
+  const corners = (() => {
+    const players = state.players
+    const idx = players.findIndex((p) => p.id === meId)
+    if (idx < 0) return cornerSlots.map((_, i) => players[i] ?? null)
+    const rotated = players.slice(idx).concat(players.slice(0, idx))
+    const others = rotated.slice(1)
+    const lt = others[0] ?? null
+    const rt = others[1] ?? null
+    const rb = others[2] ?? null
+    const lb = null
+    return [lt, rt, rb, lb]
+  })()
+
+  useEffect(() => {
+    const rtId = corners[1]?.id ?? null
+    const rbId = corners[2]?.id ?? null
+
+    const update = () => {
+      if (!rtId || !rbId) return
+      const rtEl = cornerRefByPlayerId.current[rtId] ?? null
+      const rbEl = cornerRefByPlayerId.current[rbId] ?? null
+      if (!rtEl || !rbEl) return
+      const rt = rtEl.getBoundingClientRect()
+      const rb = rbEl.getBoundingClientRect()
+      if (!Number.isFinite(rt.bottom) || !Number.isFinite(rb.top)) return
+      const center = (rt.bottom + rb.top) / 2
+      const clamped = Math.max(60, Math.min(window.innerHeight - 60, center))
+      setActionDockTopPx(clamped)
+
+      const groupEl = actionDockGroupRef.current
+      if (!groupEl) return
+      const gapH = rb.top - rt.bottom
+      const originalTwoCol = groupEl.classList.contains('two-col')
+      if (originalTwoCol) groupEl.classList.remove('two-col')
+      const oneColRect = groupEl.getBoundingClientRect()
+      if (originalTwoCol) groupEl.classList.add('two-col')
+
+      const oneColH = oneColRect.height
+      if (!Number.isFinite(oneColH) || !Number.isFinite(gapH)) return
+
+      const pad = 12
+      const hysteresisPx = 10
+      setActionDockTwoCol((prev) => {
+        if (prev) {
+          return oneColH + pad > gapH - hysteresisPx
+        }
+        return oneColH + pad > gapH + hysteresisPx
+      })
+    }
+
+    const raf = window.requestAnimationFrame(update)
+    const ro =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            update()
+          })
+    if (ro && actionDockGroupRef.current) ro.observe(actionDockGroupRef.current)
+    window.addEventListener('resize', update)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      ro?.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [corners[1]?.id, corners[2]?.id])
   const turnTimer = `${String(Math.floor(remainingSec / 60)).padStart(2, '0')}:${String(remainingSec % 60).padStart(2, '0')}`
   const showChat = openMenu === 'chat'
   const showLog = openMenu === 'log'
   const showBuild = openMenu === 'build'
   const showMarket = openMenu === 'market'
+  const showRecipes = openMenu === 'recipes'
 
   const sumAmounts = (amounts: Partial<Record<Resource, number>>) =>
     (Object.values(amounts) as number[]).reduce((a, b) => a + (b ?? 0), 0)
@@ -2065,62 +2812,122 @@ function GameInner() {
     if (st) st.warpLanes += 1
   }
 
-  const turnEvents = state.events.filter((e) => e.timestamp >= state.turnStartedAt)
-  const turnEventPrimary = turnEvents[turnEvents.length - 1]?.text ?? ''
-  const turnEventSecondary = turnEvents[turnEvents.length - 2]?.text ?? ''
-  const turnEventText = [turnEventPrimary, turnEventSecondary].filter(Boolean).join(' · ')
+  const activePlayer = state.players[state.currentPlayerIndex] ?? null
+  const activeClr = activePlayer ? playerColor(activePlayer.color) : '#94a3b8'
+  const showTurnBadge = state.status !== 'lobby' && state.status !== 'finished'
 
   return (
     <div className="page star-game">
-      <div className="star-topbar" ref={topbarRef}>
-        <div className="star-topbar-left">
-          <img className="star-topbar-logo" src="/avatars/Logo.png" alt="Star Cluster" />
-          <div className="star-topbar-meta">
-            <div className="star-meta-pill">{t.round} {state.round}/{state.maxRounds}</div>
-            {setupLabel ? <div className="star-meta-pill">{setupLabel}</div> : null}
+      <div className="star-float-top-center" style={{ left: 0, right: eventRightInset, justifyContent: 'flex-start' }}>
+        <div className="star-top-actions" aria-label="Schnellzugriff">
+          <div className="star-zoom compact">
+            <span className="star-zoom-label" aria-label="Zoom">
+              <span className="material-symbols-rounded" aria-hidden="true">zoom_in</span>
+            </span>
+            <input
+              className="star-zoom-slider"
+              type="range"
+              min={0}
+              max={2}
+              step={1}
+              value={zoomLevel}
+              onChange={(e) => setZoomLevel(Number(e.target.value) as 0 | 1 | 2)}
+            />
           </div>
-        </div>
-        <div className="star-topbar-center">
-          {turnEventText ? <div className="star-event-bar" aria-label={t.events}>{turnEventText}</div> : null}
-        </div>
-        <div className="star-topbar-right">
-          <button type="button" className="star-btn icon-only" aria-label="Sprache" onClick={() => {
-            setLang((l) => {
-              const n = l === 'de' ? 'en' : 'de'
-              window.localStorage.setItem('star_lang', n)
-              return n
-            })
-          }}>
-            <span className="material-symbols-rounded" aria-hidden="true">translate</span>
-          </button>
-          {state.status === 'lobby' && state.creatorId === meId ? (
-            <button
-              type="button"
-              className="star-btn"
-              onClick={() => startGame()}
-              disabled={!canStartGame}
-            >
-              <span className="material-symbols-rounded" aria-hidden="true">play_arrow</span>
-              {t.startGame}
-            </button>
-          ) : null}
-          {state.status !== 'lobby' ? (
-            <div className={`star-meta-pill ${remainingSec <= 5 ? 'star-pulse-red' : ''}`}>{t.time} {turnTimer}</div>
-          ) : null}
           <button
             type="button"
-            className="star-topbar-close"
-            aria-label={t.leaveGame}
-            title={t.leaveGame}
-            onClick={() => {
-              if (!window.confirm(t.leaveGameConfirm)) return
-              navigate('/lobby')
-            }}
+            className={`star-btn icon-only ${openMenu === 'log' ? 'active' : ''}`}
+            aria-label={t.log}
+            title={t.log}
+            onClick={() => setOpenMenu((m) => (m === 'log' ? null : 'log'))}
           >
-            <span className="material-symbols-rounded" aria-hidden="true">close</span>
+            <span className="material-symbols-rounded" aria-hidden="true">list_alt</span>
+          </button>
+          <button
+            type="button"
+            className="star-btn icon-only"
+            aria-label={isMuted ? t.soundOn : t.soundOff}
+            title={isMuted ? t.soundOn : t.soundOff}
+            onClick={() => setIsMuted((v) => !v)}
+          >
+            {isMuted ? (
+              <span className="material-symbols-rounded" aria-hidden="true">volume_off</span>
+            ) : (
+              <span className="material-symbols-rounded" aria-hidden="true">volume_up</span>
+            )}
           </button>
         </div>
+        {turnEventText ? (
+          <div className={`star-event-bar ${eventMarquee ? 'marquee' : ''}`} aria-label={t.events}>
+            <div className="star-event-text" ref={eventTextRef}>
+              {turnEventText}
+            </div>
+          </div>
+        ) : null}
       </div>
+      <div className="star-float-top-right" ref={rightDockRef}>
+        <div className="star-meta-pill">{t.round} {state.round}/{state.maxRounds}</div>
+        {setupLabel ? <div className="star-meta-pill">{setupLabel}</div> : null}
+        <button type="button" className="star-btn icon-only" aria-label="Sprache" onClick={() => {
+          setLang((l) => {
+            const n = l === 'de' ? 'en' : 'de'
+            window.localStorage.setItem('star_lang', n)
+            return n
+          })
+        }}>
+          <span className="material-symbols-rounded" aria-hidden="true">translate</span>
+        </button>
+        {state.status !== 'lobby' ? (
+          <div className={`star-meta-pill ${remainingSec <= 5 ? 'star-pulse-red' : ''}`}>{t.time} {turnTimer}</div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        className="star-float-exit"
+        aria-label={t.leaveGame}
+        title={t.leaveGame}
+        onClick={() => {
+          if (!window.confirm(t.leaveGameConfirm)) return
+          navigate('/lobby')
+        }}
+      >
+        <span className="material-symbols-rounded" aria-hidden="true">close</span>
+      </button>
+
+      {lastError ? (
+        <div className="star-float-error" role="alert">
+          <div>{lastError}</div>
+          <details style={{ marginTop: 6 }}>
+            <summary>Debug</summary>
+            <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, whiteSpace: 'pre-wrap', opacity: 0.95, marginTop: 6 }}>
+              {JSON.stringify(
+                {
+                  url: window.location.href,
+                  connected: isConnected,
+                  socketId: socket?.id ?? null,
+                  gameId: state.id,
+                  meId,
+                  status: state.status,
+                  phase: state.phase,
+                  currentPlayerId: state.players[state.currentPlayerIndex]?.id ?? null,
+                  openMenu,
+                  mode,
+                },
+                null,
+                2,
+              )}
+            </div>
+          </details>
+        </div>
+      ) : null}
+
+      {showTurnBadge ? (
+        <div className="star-turn-badge" style={{ top: topUiInset + 10, ['--pclr']: activeClr } as CSSProperties & { ['--pclr']: string }}>
+          <span className="material-symbols-rounded" aria-hidden="true">play_circle</span>
+          <span className="star-turn-label">{t.turnNow}:</span>
+          <span className="star-turn-name">{activePlayer?.name ?? '—'}</span>
+        </div>
+      ) : null}
 
       <div className="star-main sidebar-hidden">
         <div
@@ -2152,12 +2959,25 @@ function GameInner() {
             const p = clientToBoard(e.clientX, e.clientY)
             if (!p) {
               setHoverVertexId(null)
+              setHoverEdgeId(null)
               setHoverTileTip(null)
               return
             }
             const scale = transformRef.current?.scale ?? 1
             const hit = hitTestVertex(state.board.vertices, p.bx, p.by, 16 / scale)
             setHoverVertexId(hit ?? null)
+
+            if (mode === 'hyperlane' && isMyTurn && state.phase === 'main') {
+              const edgeHit = hitTestEdge(state.board.edges, vById, p.bx, p.by, 28 / scale)
+              if (edgeHit) {
+                const edge = state.board.edges.find((x) => x.id === edgeHit) ?? null
+                setHoverEdgeId(edge && canBuildHyperlaneEdge(state, meId, edge) ? edgeHit : null)
+              } else {
+                setHoverEdgeId(null)
+              }
+            } else {
+              setHoverEdgeId(null)
+            }
             if (dragRef.current) {
               setHoverTileTip(null)
               return
@@ -2296,6 +3116,26 @@ function GameInner() {
               return
             }
 
+            if (mode === 'hyperlane') {
+              if (isSetup && required !== 'hyperlane') return
+              const edgeHit = hitTestEdge(state.board.edges, vById, bx, by, 30 / scale)
+              if (!edgeHit) {
+                setMode('none')
+                setPendingVertex(null)
+                setPendingWarpFrom(null)
+                setHoverEdgeId(null)
+                return
+              }
+              const edge = state.board.edges.find((x) => x.id === edgeHit) ?? null
+              if (!edge || !canBuildHyperlaneEdge(state, meId, edge)) return
+              buildHyperlane(edge.id)
+              emitHoloPulseEdge(edge.id)
+              playToneRef.current(196, 70, 'sawtooth', 0.05)
+              setMode('none')
+              setHoverEdgeId(null)
+              return
+            }
+
             const hit = hitTestVertex(state.board.vertices, bx, by, 18 / scale)
             if (!hit) {
               if (mode !== 'none') {
@@ -2332,6 +3172,8 @@ function GameInner() {
               const from = pendingWarpFrom
               setPendingWarpFrom(null)
               buildWarpLane({ fromVertexId: from, toVertexId: hit })
+              emitHoloPulseVertex(from)
+              emitHoloPulseVertex(hit)
               setMode('none')
               return
             }
@@ -2339,27 +3181,14 @@ function GameInner() {
             if (mode === 'station') {
               if (isSetup && required !== 'station') return
               buildStation(hit)
+              emitHoloPulseVertex(hit)
               setMode('none')
               return
             }
             if (mode === 'upgrade') {
               if (isSetup) return
               upgradeStarbase(hit)
-              setMode('none')
-              return
-            }
-            if (mode === 'hyperlane') {
-              if (isSetup && required !== 'hyperlane') return
-              if (!pendingVertex) {
-                setPendingVertex(hit)
-                return
-              }
-              const a = pendingVertex
-              const b = hit
-              setPendingVertex(null)
-              const k = a < b ? `${a}|${b}` : `${b}|${a}`
-              const edge = eByKey.get(k)
-              if (edge) buildHyperlane(edge.id)
+              emitHoloPulseVertex(hit)
               setMode('none')
               return
             }
@@ -2425,61 +3254,71 @@ function GameInner() {
               {hoverTileTip.text}
             </div>
           ) : null}
-          <div className="star-overlay-top-center" aria-label="Würfel">
-            <div className="star-dice-row">
-              <DiceCube value={d1} rolling={isRolling} />
-              <DiceCube value={d2} rolling={isRolling} />
-            </div>
-          </div>
           {eventToast && nowMs < eventToast.untilMs ? (
             <div className="star-event-toast" role="status">
               {eventToast.text}
             </div>
           ) : null}
           {showBuild ? (
-            <div className="star-overlay-bottom-center">
-              {showBuild ? (
-                <div className="star-action-panel">
+            <div
+              className="star-overlay-panel star-overlay-recipes"
+              style={{
+                left: '50%',
+                top: topUiInset + 10,
+                bottom: bottombarH + 10,
+                transform: 'translateX(-50%)',
+                width: 'min(560px, 94vw)',
+              }}
+            >
+              <div className="star-panel star-market-panel">
+                <div className="star-panel-title">
+                  <div className="star-panel-title-row">
+                    <span>{t.build}</span>
+                    <button
+                      type="button"
+                      className="star-btn"
+                      onClick={() => setVisualStyleBoth(visualStyle === 'holo' ? 'classic' : 'holo')}
+                    >
+                      {visualStyle === 'holo' ? 'Look: Holo' : 'Look: Klassisch'}
+                    </button>
+                    <button type="button" className="star-btn" onClick={() => setOpenMenu(null)}>
+                      {t.close}
+                    </button>
+                  </div>
+                </div>
+                <div className="star-recipes">
                   {([
-                    { kind: 'station' as const, label: 'Station', enabled: canBuildStationNow, cost: stationCost },
-                    { kind: 'hyperlane' as const, label: 'Hyperlane', enabled: canBuildHyperlaneNow, cost: hyperlaneCost },
-                    { kind: 'upgrade' as const, label: 'Sternenbasis', enabled: canUpgradeNow, cost: starbaseCost },
-                    { kind: 'warp' as const, label: 'Warp-Lane', enabled: canWarpNow, cost: warpLaneCost },
+                    { kind: 'station' as const, label: t.station, enabled: canBuildStationNow, cost: stationCost },
+                    { kind: 'hyperlane' as const, label: t.hyperlane, enabled: canBuildHyperlaneNow, cost: hyperlaneCost },
+                    { kind: 'upgrade' as const, label: t.starbase, enabled: canUpgradeNow, cost: starbaseCost },
+                    { kind: 'warp' as const, label: t.warp, enabled: canWarpNow, cost: warpLaneCost },
                   ]).map((opt) => (
-                    <div key={opt.kind} className="star-build-option">
-                      <div
-                        className={`star-build-icon ${opt.enabled ? 'enabled' : 'disabled'}`}
-                        data-tip="Klicken zum Platzieren"
-                        style={{ color: playerColor(me?.color ?? 'blue') }}
-                        onClick={() => {
-                          if (!opt.enabled) return
-                          setPendingVertex(null)
-                          setPendingWarpFrom(null)
-                          setMode(opt.kind === 'station' ? 'station' : opt.kind === 'upgrade' ? 'upgrade' : opt.kind === 'hyperlane' ? 'hyperlane' : 'warp')
-                          setOpenMenu(null)
-                          const label = opt.kind === 'station' ? t.station : opt.kind === 'upgrade' ? t.starbase : opt.kind === 'hyperlane' ? t.hyperlane : t.warp
-                          setEventToast({ text: `${label} · ${t.dragCancel}`, untilMs: nowMs + 1600 })
-                        }}
-                        role="button"
-                        aria-label={opt.label}
-                      >
+                    <button
+                      key={opt.kind}
+                      type="button"
+                      className="star-recipe-row"
+                      disabled={!opt.enabled}
+                      onClick={() => {
+                        if (!opt.enabled) return
+                        setPendingVertex(null)
+                        setPendingWarpFrom(null)
+                        setHoverEdgeId(null)
+                        setMode(opt.kind === 'station' ? 'station' : opt.kind === 'upgrade' ? 'upgrade' : opt.kind === 'hyperlane' ? 'hyperlane' : 'warp')
+                        setOpenMenu(null)
+                        setEventToast({ text: opt.kind === 'hyperlane' ? t.hyperlaneEdgeHint : `${opt.label} · ${t.dragCancel}`, untilMs: nowMs + 1600 })
+                      }}
+                    >
+                      <div className="star-recipe-icon" style={{ color: playerColor(me?.color ?? 'blue') }}>
                         {buildIcon(opt.kind, me?.color)}
-                        {opt.enabled ? (
-                          <span className="star-build-grip material-symbols-rounded" aria-hidden="true">
-                            drag_indicator
-                          </span>
-                        ) : null}
                       </div>
-                      <div className="star-build-body">
-                        <div className="star-build-title">{opt.label}</div>
-                        <div className="star-build-cost">
-                          {isSetup ? null : <CostInline cost={opt.cost} resources={me?.resources} />}
-                        </div>
+                      <div className="star-recipe-line">
+                        <span className="star-recipe-name">{opt.label}</span>
+                        <span className="star-recipe-cost">{isSetup ? null : <CostInline cost={opt.cost} resources={me?.resources} />}</span>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
-              ) : null}
+              </div>
             </div>
           ) : null}
           {showMarket ? (
@@ -2487,7 +3326,10 @@ function GameInner() {
               className="star-overlay-panel star-overlay-market"
               role="dialog"
               aria-label="Schwarzmarkt"
-              style={{ top: topbarH + 10, bottom: bottombarH + 10 }}
+              style={{
+                top: topUiInset + 10,
+                bottom: 10,
+              }}
               onPointerDown={(e) => e.stopPropagation()}
               onPointerMove={(e) => e.stopPropagation()}
               onPointerUp={(e) => e.stopPropagation()}
@@ -2500,22 +3342,59 @@ function GameInner() {
                 <div className="star-panel-title">
                   <div className="star-panel-title-row">
                     <span>{t.market}</span>
+                    <button
+                      type="button"
+                      className="star-btn"
+                      onClick={() => setVisualStyleBoth(visualStyle === 'holo' ? 'classic' : 'holo')}
+                    >
+                      {visualStyle === 'holo' ? 'Look: Holo' : 'Look: Klassisch'}
+                    </button>
                     <button type="button" className="star-btn" onClick={() => setOpenMenu(null)}>
                       {t.close}
                     </button>
                   </div>
                 </div>
                 <div className="star-market-tabs">
-                  <button type="button" className={`star-btn ${marketTab === 'hole' ? 'active' : ''}`} onClick={() => setMarketTab('hole')}>
+                  <button
+                    type="button"
+                    className={`star-btn ${marketTab === 'hole' ? 'active' : ''}`}
+                    onClick={() => {
+                      setDealNotice(null)
+                      setMarketTab('hole')
+                    }}
+                  >
                     {t.blackhole}
                   </button>
-                  <button type="button" className={`star-btn ${marketTab === 'players' ? 'active' : ''}`} onClick={() => setMarketTab('players')}>
-                    Spielerhandel
+                  <button
+                    type="button"
+                    className={`star-btn ${marketTab === 'players' ? 'active' : ''}`}
+                    onClick={() => {
+                      setDealNotice(null)
+                      setMarketTab('players')
+                    }}
+                  >
+                    Schmugglerbörse
                   </button>
+                  {(() => {
+                    const currentTurnPlayerId = state.players[state.currentPlayerIndex]?.id ?? null
+                    if (!currentTurnPlayerId) return null
+                    const openOffer =
+                      state.tradeOffers
+                        .slice()
+                        .reverse()
+                        .find((o) => o.status === 'open' && o.fromPlayerId === currentTurnPlayerId) ?? null
+                    if (!openOffer) return null
+                    const secs = Math.max(0, Math.ceil((openOffer.createdAt + 20_000 - nowMs) / 1000))
+                    return (
+                      <div className="star-market-trade-countdown" aria-label="Countdown">
+                        {secs}s
+                      </div>
+                    )
+                  })()}
                 </div>
                 <div className="star-market-body">
                   {marketTab === 'hole' ? (
-                    <>
+                    <div className="star-market-scroll">
                       <div>
                         <div className="star-market-section-title">Du gibst</div>
                         <div className="star-market-grid" style={{ marginTop: 8 }}>
@@ -2568,9 +3447,11 @@ function GameInner() {
                       <div className="star-trade-offer">
                         <div className="star-trade-offer-title">
                           <span>Deal</span>
-                          <span style={{ opacity: 0.75 }}>
-                            {marketRate ? `${marketRate}:1` : '—'}
-                          </span>
+                          {dealNotice ? (
+                            <span className={`star-trade-offer-note ${dealNotice.kind}`}>{dealNotice.text}</span>
+                          ) : (
+                            <span style={{ opacity: 0.75 }}>{marketRate ? `${marketRate}:1` : '—'}</span>
+                          )}
                         </div>
                         <div className="star-trade-offer-amounts">
                           <span className="star-trade-offer-pill">
@@ -2592,321 +3473,290 @@ function GameInner() {
                             type="button"
                             className="star-btn"
                             disabled={!canMarket}
-                            onClick={() => tradeBlackMarket({ give: marketGive, receive: marketReceive })}
+                            onClick={() => {
+                              setDealNotice(null)
+                              const rate = marketRate ?? null
+                              if (!rate) return
+                              const meLocal = state.players.find((p) => p.id === meId) ?? null
+                              if (!meLocal) return
+                              pendingBlackHoleTradeRef.current = {
+                                token: Math.random().toString(16).slice(2),
+                                give: marketGive,
+                                receive: marketReceive,
+                                rate,
+                                startedAtMs: Date.now(),
+                                before: {
+                                  giveHave: meLocal.resources[marketGive] ?? 0,
+                                  receiveHave: meLocal.resources[marketReceive] ?? 0,
+                                  poolGive: state.blackHolePool[marketGive] ?? 0,
+                                  poolReceive: state.blackHolePool[marketReceive] ?? 0,
+                                },
+                              }
+                              tradeBlackMarket({ give: marketGive, receive: marketReceive })
+                            }}
                           >
                             Tauschen
                           </button>
                         </div>
                       </div>
-                    </>
+                    </div>
                   ) : (
-                    <>
-                      <div>
-                        <div className="star-market-section-title">Mitspieler</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                          <button
-                            type="button"
-                            className={`star-btn star-market-player-btn ${marketToPlayerId === null ? 'active' : ''}`}
-                            onClick={() => setMarketToPlayerId(null)}
-                          >
-                            <div className="star-market-player-icon" aria-hidden="true">
-                              <span className="material-symbols-rounded" aria-hidden="true">groups</span>
-                            </div>
-                            <div className="star-market-player-name">An alle</div>
-                          </button>
-                          {state.players
-                            .filter((p) => p.id !== meId)
-                            .map((p) => (
-                              <button
-                                key={p.id}
-                                type="button"
-                                className={`star-btn star-market-player-btn ${marketToPlayerId === p.id ? 'active' : ''}`}
-                                onClick={() => setMarketToPlayerId(p.id)}
-                              >
-                                <div className="star-market-player-icon">
-                                  {p.avatarUrl ? (
-                                    <img src={p.avatarUrl} alt={p.name} className="star-market-player-avatar" />
-                                  ) : (
-                                    <div className="star-market-player-avatar-fallback" style={{ background: playerColor(p.color) }} />
-                                  )}
-                                </div>
-                                <div className="star-market-player-name">{p.name}</div>
-                              </button>
-                            ))}
-                        </div>
-                      </div>
+                    <div className="star-market-scroll">
+                      {(() => {
+                        const currentTurnPlayerId = state.players[state.currentPlayerIndex]?.id ?? null
+                        const openOffer =
+                          currentTurnPlayerId
+                            ? state.tradeOffers
+                                .slice()
+                                .reverse()
+                                .find((o) => o.status === 'open' && o.fromPlayerId === currentTurnPlayerId) ?? null
+                            : null
 
-                      <div>
-                        <div className="star-market-section-title">Du gibst</div>
-                        <div className="star-market-stepper-row" style={{ marginTop: 8 }}>
-                          {resourceOrder.map((r) => {
-                            const have = me?.resources[r] ?? 0
-                            const cur = Math.floor(offerGive[r] ?? 0)
-                            return (
-                              <div key={r} className="star-market-stepper">
-                                <div className="star-market-stepper-top">
-                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
-                                  <span>{resourceLabel(r)}</span>
-                                </div>
-                                <div className="star-market-stepper-controls">
-                                  <button
-                                    type="button"
-                                    className="star-market-stepper-btn"
-                                    aria-label={`${resourceLabel(r)} minus 1`}
-                                    title={`${resourceLabel(r)} minus 1`}
-                                    onClick={() =>
-                                      setOfferGive((prev) => {
-                                        const next = { ...prev }
-                                        const v = Math.max(0, Math.floor((next[r] ?? 0) - 1))
-                                        if (v <= 0) delete next[r]
-                                        else next[r] = v
-                                        return next
-                                      })
-                                    }
-                                    disabled={cur <= 0}
-                                  >
-                                    <span className="material-symbols-rounded" aria-hidden="true">remove</span>
-                                  </button>
-                                  <div className="star-market-stepper-count">{cur}</div>
-                                  <button
-                                    type="button"
-                                    className="star-market-stepper-btn"
-                                    aria-label={`${resourceLabel(r)} plus 1`}
-                                    title={`${resourceLabel(r)} plus 1`}
-                                    onClick={() =>
-                                      setOfferGive((prev) => {
-                                        const next = { ...prev }
-                                        const v = Math.min(have, Math.floor((next[r] ?? 0) + 1))
-                                        if (v <= 0) delete next[r]
-                                        else next[r] = v
-                                        return next
-                                      })
-                                    }
-                                    disabled={cur >= have}
-                                  >
-                                    <span className="material-symbols-rounded" aria-hidden="true">add</span>
-                                  </button>
-                                </div>
-                                <div className="star-market-chip-sub">Du hast: {have}</div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
+                        const giveAmounts = isMyTurn ? (openOffer ? openOffer.give : offerGive) : openOffer?.want ?? {}
+                        const wantAmounts = isMyTurn ? (openOffer ? openOffer.want : offerWant) : openOffer?.give ?? {}
 
-                      <div>
-                        <div className="star-market-section-title">Du willst</div>
-                        <div className="star-market-stepper-row" style={{ marginTop: 8 }}>
-                          {resourceOrder.map((r) => {
-                            const cur = Math.floor(offerWant[r] ?? 0)
-                            return (
-                              <div key={r} className="star-market-stepper">
-                                <div className="star-market-stepper-top">
-                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
-                                  <span>{resourceLabel(r)}</span>
-                                </div>
-                                <div className="star-market-stepper-controls">
-                                  <button
-                                    type="button"
-                                    className="star-market-stepper-btn"
-                                    aria-label={`${resourceLabel(r)} minus 1`}
-                                    title={`${resourceLabel(r)} minus 1`}
-                                    onClick={() =>
-                                      setOfferWant((prev) => {
-                                        const next = { ...prev }
-                                        const v = Math.max(0, Math.floor((next[r] ?? 0) - 1))
-                                        if (v <= 0) delete next[r]
-                                        else next[r] = v
-                                        return next
-                                      })
-                                    }
-                                    disabled={cur <= 0}
-                                  >
-                                    <span className="material-symbols-rounded" aria-hidden="true">remove</span>
-                                  </button>
-                                  <div className="star-market-stepper-count">{cur}</div>
-                                  <button
-                                    type="button"
-                                    className="star-market-stepper-btn"
-                                    aria-label={`${resourceLabel(r)} plus 1`}
-                                    title={`${resourceLabel(r)} plus 1`}
-                                    onClick={() =>
-                                      setOfferWant((prev) => {
-                                        const next = { ...prev }
-                                        const v = Math.min(20, Math.floor((next[r] ?? 0) + 1))
-                                        if (v <= 0) delete next[r]
-                                        else next[r] = v
-                                        return next
-                                      })
-                                    }
-                                  >
-                                    <span className="material-symbols-rounded" aria-hidden="true">add</span>
-                                  </button>
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
+                        const incGive = (r: Resource) => {
+                          const have = me?.resources[r] ?? 0
+                          setOfferGive((prev) => {
+                            const cur = Math.max(0, Math.floor(prev[r] ?? 0))
+                            if (cur >= have) return prev
+                            return { ...prev, [r]: cur + 1 }
+                          })
+                        }
 
-                      <div className="star-trade-offer">
-                        <div className="star-trade-offer-title">
-                          <span>Angebot</span>
-                          <span style={{ opacity: 0.75 }}>
-                            {marketToPlayerId
-                              ? `an ${state.players.find((p) => p.id === marketToPlayerId)?.name ?? '—'}`
-                              : 'an alle'}
-                          </span>
-                        </div>
-                        <div className="star-trade-offer-amounts">
-                          <span style={{ opacity: 0.8 }}>Gib:</span>
-                          {renderAmounts(offerGive)}
-                          <span style={{ opacity: 0.8 }}>Will:</span>
-                          {renderAmounts(offerWant)}
-                        </div>
-                        <div className="star-trade-offer-actions">
-                          <button
-                            type="button"
-                            className="star-btn"
-                            disabled={
-                              !isMyTurn ||
-                              state.status !== 'playing' ||
-                              state.phase !== 'main' ||
-                              sumAmounts(offerGive) <= 0 ||
-                              sumAmounts(offerWant) <= 0 ||
-                              !canPay(offerGive)
-                            }
-                            onClick={() => {
-                              const give = cleanAmounts(offerGive)
-                              const want = cleanAmounts(offerWant)
-                              createTradeOffer({ toPlayerId: marketToPlayerId, give, want })
-                              setOfferGive({})
-                              setOfferWant({})
-                              setCounterForOfferId(null)
-                            }}
-                          >
-                            Angebot senden
-                          </button>
-                        </div>
-                      </div>
+                        const incWant = (r: Resource) => {
+                          setOfferWant((prev) => {
+                            const cur = Math.max(0, Math.floor(prev[r] ?? 0))
+                            if (cur >= 20) return prev
+                            return { ...prev, [r]: cur + 1 }
+                          })
+                        }
 
-                      <div>
-                        <div className="star-market-section-title">Eingehend</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
-                          {state.tradeOffers
-                            .filter((o) => o.status === 'open')
-                            .filter((o) => o.fromPlayerId !== meId)
-                            .filter((o) => o.toPlayerId === null || o.toPlayerId === meId)
-                            .slice()
-                            .reverse()
-                            .map((o) => {
-                              const from = state.players.find((p) => p.id === o.fromPlayerId)
-                              const canAccept = state.players[state.currentPlayerIndex]?.id === o.fromPlayerId
-                              return (
-                                <div key={o.id} className="star-trade-offer">
-                                  <div className="star-trade-offer-title">
-                                    <span>Von {from?.name ?? '—'}</span>
-                                    <span style={{ opacity: 0.75 }}>{new Date(o.createdAt).toLocaleTimeString()}</span>
-                                  </div>
-                                  <div className="star-trade-offer-amounts">
-                                    <span style={{ opacity: 0.8 }}>Du gibst:</span>
-                                    {renderAmounts(o.want)}
-                                    <span style={{ opacity: 0.8 }}>Du bekommst:</span>
-                                    {renderAmounts(o.give)}
-                                  </div>
-                                  <div className="star-trade-offer-actions">
-                                    <button type="button" className="star-btn" onClick={() => declineTradeOffer({ offerId: o.id })}>
-                                      Ablehnen
-                                    </button>
+                        const decGive = (r: Resource) => {
+                          setOfferGive((prev) => {
+                            const cur = Math.max(0, Math.floor(prev[r] ?? 0))
+                            if (cur <= 0) return prev
+                            const next = { ...prev }
+                            const n = cur - 1
+                            if (n <= 0) delete next[r]
+                            else next[r] = n
+                            return next
+                          })
+                        }
+
+                        const decWant = (r: Resource) => {
+                          setOfferWant((prev) => {
+                            const cur = Math.max(0, Math.floor(prev[r] ?? 0))
+                            if (cur <= 0) return prev
+                            const next = { ...prev }
+                            const n = cur - 1
+                            if (n <= 0) delete next[r]
+                            else next[r] = n
+                            return next
+                          })
+                        }
+
+                        const canSendNow =
+                          state.status === 'playing' &&
+                          state.phase === 'main' &&
+                          isMyTurn &&
+                          sumAmounts(cleanAmounts(offerGive)) > 0 &&
+                          sumAmounts(cleanAmounts(offerWant)) > 0 &&
+                          canPay(cleanAmounts(offerGive)) &&
+                          !openOffer
+
+                        const canAcceptNow =
+                          Boolean(openOffer) &&
+                          state.status === 'playing' &&
+                          state.phase === 'main' &&
+                          !isMyTurn &&
+                          canPay(openOffer!.want)
+                        const canDeclineNow = Boolean(openOffer) && state.status === 'playing' && state.phase === 'main' && !isMyTurn
+
+                        const renderAmountsEditable = (amounts: Partial<Record<Resource, number>>, onDec: (r: Resource) => void) => {
+                          const entries = resourceOrder.map((r) => ({ r, n: Math.floor(amounts[r] ?? 0) })).filter((x) => x.n > 0)
+                          if (!entries.length) return <span className="subtle-text">—</span>
+                          return (
+                            <>
+                              {entries.map((x) => (
+                                <button key={x.r} type="button" className="star-trade-offer-pill star-trade-offer-pill-btn" onClick={() => onDec(x.r)}>
+                                  <img className="star-market-icon star-mini-hex" src={resourceIconSrc(x.r)} alt={x.r} />
+                                  <span className="star-trade-offer-pill-label">{resourceLabel(x.r)}</span>
+                                  <span className="star-trade-offer-pill-count">{x.n}</span>
+                                </button>
+                              ))}
+                            </>
+                          )
+                        }
+
+                        return (
+                          <>
+                            <div>
+                              <div className="star-market-section-title">Du gibst</div>
+                              <div className="star-market-grid" style={{ marginTop: 8 }}>
+                                {resourceOrder.map((r) => {
+                                  const have = me?.resources[r] ?? 0
+                                  const selected = Math.max(0, Math.floor(giveAmounts[r] ?? 0))
+                                  const lockedByWant = Math.max(0, Math.floor(wantAmounts[r] ?? 0)) > 0
+                                  const disabled = !isMyTurn || Boolean(openOffer) || have <= 0 || lockedByWant
+                                  return (
                                     <button
+                                      key={r}
                                       type="button"
-                                      className="star-btn"
-                                      disabled={!canAccept}
-                                      onClick={() => acceptTradeOffer({ offerId: o.id })}
+                                      className={`star-market-chip ${selected > 0 ? 'selected' : ''}`}
+                                      onClick={() => incGive(r)}
+                                      disabled={disabled}
                                     >
-                                      Akzeptieren
+                                      <div className="star-market-chip-top">
+                                        <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                        <span>{resourceLabel(r)}</span>
+                                      </div>
+                                      <div className="star-market-chip-sub">
+                                        Du hast: {have}
+                                        {selected > 0 ? ` · ${selected}` : ''}
+                                      </div>
                                     </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="star-market-section-title">Du bekommst</div>
+                              <div className="star-market-grid" style={{ marginTop: 8 }}>
+                                {resourceOrder.map((r) => {
+                                  const selected = Math.max(0, Math.floor(wantAmounts[r] ?? 0))
+                                  const lockedByGive = Math.max(0, Math.floor(giveAmounts[r] ?? 0)) > 0
+                                  const disabled = !isMyTurn || Boolean(openOffer) || lockedByGive
+                                  return (
+                                    <button
+                                      key={r}
+                                      type="button"
+                                      className={`star-market-chip ${selected > 0 ? 'selected' : ''}`}
+                                      onClick={() => incWant(r)}
+                                      disabled={disabled}
+                                    >
+                                      <div className="star-market-chip-top">
+                                        <img className="star-market-icon star-mini-hex" src={resourceIconSrc(r)} alt={r} />
+                                        <span>{resourceLabel(r)}</span>
+                                      </div>
+                                      <div className="star-market-chip-sub">{selected > 0 ? `Auswahl: ${selected}` : 'Klick zum hinzufügen'}</div>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="star-trade-offer">
+                              <div className="star-trade-offer-title">
+                                <span>Deal</span>
+                                {dealNotice ? <span className={`star-trade-offer-note ${dealNotice.kind}`}>{dealNotice.text}</span> : <span />}
+                              </div>
+                              <div className="star-trade-offer-amounts">
+                                {isMyTurn
+                                  ? openOffer
+                                    ? renderAmounts(openOffer.give)
+                                    : renderAmountsEditable(cleanAmounts(offerGive), decGive)
+                                  : openOffer
+                                    ? renderAmounts(openOffer.want)
+                                    : <span className="subtle-text">—</span>}
+                                <span style={{ opacity: 0.65, alignSelf: 'center' }} aria-hidden="true">
+                                  <span className="material-symbols-rounded" aria-hidden="true">arrow_forward</span>
+                                </span>
+                                {isMyTurn
+                                  ? openOffer
+                                    ? renderAmounts(openOffer.want)
+                                    : renderAmountsEditable(cleanAmounts(offerWant), decWant)
+                                  : openOffer
+                                    ? renderAmounts(openOffer.give)
+                                    : <span className="subtle-text">—</span>}
+                              </div>
+                              <div className="star-trade-offer-actions">
+                                {isMyTurn ? (
+                                  <button
+                                    type="button"
+                                    className="star-btn"
+                                    disabled={!canSendNow}
+                                    onClick={() => {
+                                      setDealNotice(null)
+                                      const give = cleanAmounts(offerGive)
+                                      const want = cleanAmounts(offerWant)
+                                      pendingTradeOfferCreateRef.current = { token: Math.random().toString(16).slice(2), startedAtMs: Date.now() }
+                                      createTradeOffer({ toPlayerId: null, give, want })
+                                    }}
+                                  >
+                                    Angebot senden
+                                  </button>
+                                ) : (
+                                  <>
                                     <button
                                       type="button"
                                       className="star-btn"
+                                      disabled={!canAcceptNow}
                                       onClick={() => {
-                                        setMarketToPlayerId(o.fromPlayerId)
-                                        setOfferGive(cleanAmounts(o.want))
-                                        setOfferWant(cleanAmounts(o.give))
-                                        setCounterForOfferId(o.id)
+                                        if (!openOffer) return
+                                        setDealNotice(null)
+                                        pendingTradeAcceptRef.current = openOffer.id
+                                        acceptTradeOffer({ offerId: openOffer.id })
                                       }}
                                     >
-                                      Gegenvorschlag
+                                      Annehmen
                                     </button>
-                                    {counterForOfferId === o.id ? (
-                                      <button
-                                        type="button"
-                                        className="star-btn"
-                                        disabled={sumAmounts(offerGive) <= 0 || sumAmounts(offerWant) <= 0 || !canPay(offerGive)}
-                                        onClick={() => {
-                                          counterTradeOffer({ offerId: o.id, give: cleanAmounts(offerGive), want: cleanAmounts(offerWant) })
-                                          setCounterForOfferId(null)
-                                          setOfferGive({})
-                                          setOfferWant({})
-                                        }}
-                                      >
-                                        Senden
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          {!state.tradeOffers.some((o) => o.status === 'open' && o.fromPlayerId !== meId && (o.toPlayerId === null || o.toPlayerId === meId)) ? (
-                            <div className="subtle-text">Keine offenen Angebote.</div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="star-market-section-title">Ausgehend</div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
-                          {state.tradeOffers
-                            .filter((o) => o.status === 'open' && o.fromPlayerId === meId)
-                            .slice()
-                            .reverse()
-                            .map((o) => {
-                              const to = o.toPlayerId ? state.players.find((p) => p.id === o.toPlayerId) : null
-                              return (
-                                <div key={o.id} className="star-trade-offer">
-                                  <div className="star-trade-offer-title">
-                                    <span>{to ? `An ${to.name}` : 'An alle'}</span>
-                                    <span style={{ opacity: 0.75 }}>{new Date(o.createdAt).toLocaleTimeString()}</span>
-                                  </div>
-                                  <div className="star-trade-offer-amounts">
-                                    <span style={{ opacity: 0.8 }}>Du gibst:</span>
-                                    {renderAmounts(o.give)}
-                                    <span style={{ opacity: 0.8 }}>Du willst:</span>
-                                    {renderAmounts(o.want)}
-                                  </div>
-                                  <div className="star-trade-offer-actions">
-                                    <button type="button" className="star-btn" onClick={() => cancelTradeOffer({ offerId: o.id })}>
-                                      Zurückziehen
+                                    <button
+                                      type="button"
+                                      className="star-btn"
+                                      disabled={!canDeclineNow}
+                                      onClick={() => {
+                                        if (!openOffer) return
+                                        setDealNotice(null)
+                                        if (openOffer.toPlayerId && openOffer.toPlayerId === meId) {
+                                          declineTradeOffer({ offerId: openOffer.id })
+                                        }
+                                        setOpenMenu(null)
+                                      }}
+                                    >
+                                      Ablehnen
                                     </button>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          {!state.tradeOffers.some((o) => o.status === 'open' && o.fromPlayerId === meId) ? (
-                            <div className="subtle-text">Keine offenen Angebote.</div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        )
+                      })()}
+                    </div>
                   )}
                 </div>
               </div>
             </div>
           ) : null}
           {showLog ? (
-            <div className="star-overlay-panel star-overlay-right" style={{ top: topbarH + 10, bottom: bottombarH + 10 }}>
-              <div className="star-panel">
-                <div className="star-panel-title">Log</div>
+            <div
+              className="star-overlay-panel star-overlay-recipes"
+              style={{
+                left: '50%',
+                top: topUiInset + 10,
+                bottom: bottombarH + 10,
+                transform: 'translateX(-50%)',
+                width: 'min(560px, 94vw)',
+              }}
+            >
+              <div className="star-panel star-market-panel">
+                <div className="star-panel-title">
+                  <div className="star-panel-title-row">
+                    <span>Log</span>
+                    <button
+                      type="button"
+                      className="star-btn"
+                      onClick={() => setVisualStyleBoth(visualStyle === 'holo' ? 'classic' : 'holo')}
+                    >
+                      {visualStyle === 'holo' ? 'Look: Holo' : 'Look: Klassisch'}
+                    </button>
+                    <button type="button" className="star-btn" onClick={() => setOpenMenu(null)}>
+                      {t.close}
+                    </button>
+                  </div>
+                </div>
                 <div className="star-log">
                   {state.events.slice().reverse().map((ev) => (
                     <div key={ev.id} className="star-log-line">
@@ -2919,10 +3769,63 @@ function GameInner() {
             </div>
           ) : null}
           {showChat ? (
-            <div className="star-overlay-panel star-overlay-right" style={{ top: topbarH + 10, bottom: bottombarH + 10 }}>
-              <div className="star-panel">
-                <div className="star-panel-title">Chat</div>
-                <Chat state={state} />
+            <div
+              className="star-overlay-panel star-overlay-recipes"
+              style={{
+                left: '50%',
+                top: topUiInset + 10,
+                bottom: bottombarH + 10,
+                transform: 'translateX(-50%)',
+                width: 'min(560px, 94vw)',
+              }}
+            >
+              <div className="star-panel star-market-panel">
+                <div className="star-panel-title">
+                  <div className="star-panel-title-row">
+                    <span>Chat</span>
+                    <button type="button" className="star-btn" onClick={() => setOpenMenu(null)}>
+                      {t.close}
+                    </button>
+                  </div>
+                </div>
+                <Chat state={state} embedded />
+              </div>
+            </div>
+          ) : null}
+          {showRecipes ? (
+            <div
+              className="star-overlay-panel star-overlay-recipes"
+              style={{
+                left: '50%',
+                top: topUiInset + 10,
+                bottom: bottombarH + 10,
+                transform: 'translateX(-50%)',
+                width: 'min(560px, 94vw)',
+              }}
+            >
+              <div className="star-panel star-market-panel star-recipes-panel">
+                <div className="star-panel-title">{t.recipes}</div>
+                <div className="star-recipes">
+                  {[
+                    { kind: 'station' as const, title: t.station, cost: stationCost, note: isSetup ? t.setupFree : null },
+                    { kind: 'hyperlane' as const, title: t.hyperlane, cost: hyperlaneCost, note: isSetup ? t.setupFree : null },
+                    { kind: 'upgrade' as const, title: t.starbase, cost: starbaseCost, note: null },
+                    { kind: 'warp' as const, title: t.warp, cost: warpLaneCost, note: null },
+                  ].map((r) => (
+                    <div key={r.kind} className="star-recipe-row">
+                      <div className="star-recipe-icon" style={{ color: playerColor(me?.color ?? 'blue') }}>
+                        {buildIcon(r.kind, me?.color)}
+                      </div>
+                      <div className="star-recipe-line">
+                        <span className="star-recipe-name">{r.title}</span>
+                        {r.note ? <span className="star-recipe-note">{r.note}</span> : null}
+                        <span className="star-recipe-cost">
+                          <CostStaticInline cost={r.cost} />
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ) : null}
@@ -2967,46 +3870,112 @@ function GameInner() {
         </div>
       </div>
 
-      <div className="star-bottombar" ref={bottombarRef}>
-        <div className="star-hand">
-          {([
-            { r: 'metal' as const, label: 'Metall', tileSrc: '/avatars/metal.svg', count: me?.resources.metal ?? 0 },
-            { r: 'gas' as const, label: 'Gas', tileSrc: '/avatars/gas1.svg', count: me?.resources.gas ?? 0 },
-            { r: 'crystal' as const, label: 'Kristall', tileSrc: '/avatars/crystal.svg', count: me?.resources.crystal ?? 0 },
-            { r: 'food' as const, label: 'Nahrung', tileSrc: '/avatars/food.svg', count: me?.resources.food ?? 0 },
-            { r: 'data' as const, label: 'Daten', tileSrc: '/avatars/data.svg', count: me?.resources.data ?? 0 },
-          ]).map((it) => (
-            <div key={it.r} className="star-hand-item" aria-label={it.label}>
-              <div className="star-hand-top">
-                <div className="star-hand-count-left" aria-label={`${it.count}`}>{it.count}</div>
-                <img className="star-hand-icon" src={it.tileSrc} alt={it.label} draggable={false} />
+      <div className="star-float-bottom" ref={bottombarRef}>
+        <div className="star-float-bottom-left">
+          <div className="star-home-stack">
+            <div
+              className="star-home-dock"
+              style={{ ['--pclr']: playerColor(me?.color ?? 'blue') } as CSSProperties & { ['--pclr']: string }}
+            >
+              <div className="star-home-resbar" aria-label="Deine Rohstoffe">
+                {(['metal', 'gas', 'crystal', 'food', 'data'] as const).map((r) => {
+                  const count = me?.resources[r] ?? 0
+                  const visibleCount = Math.min(5, Math.floor(count))
+                  const extraCount = Math.max(0, Math.floor(count) - visibleCount)
+                  const src = resourceIconSrc(r)
+                  return (
+                    <div key={r} className="star-home-rescol" aria-label={`${resourceLabel(r)}: ${count}`} title={`${resourceLabel(r)}: ${count}`}>
+                      <div className="star-home-resstack">
+                        {extraCount > 0 ? <div className="star-home-resstack-over">+{extraCount}</div> : null}
+                        {visibleCount > 0
+                          ? Array.from({ length: visibleCount }).map((_, i) => (
+                              <span key={i} className="star-res-tile-wrap">
+                                <img className="star-res-tile-img star-mini-hex" src={src} alt="" draggable={false} />
+                              </span>
+                            ))
+                          : [
+                              <span key="missing" className="star-res-tile-wrap missing">
+                                <img className="star-res-tile-img star-mini-hex" src={src} alt="" draggable={false} />
+                              </span>,
+                            ]}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
-              <div className="star-hand-label">{it.label}</div>
+              <div className={`star-home-card ${state.players[state.currentPlayerIndex]?.id === meId ? 'active' : ''}`}>
+                <div className="star-corner-head">
+                  <div className="star-corner-avatar-col">
+                    <button
+                      type="button"
+                      className={`star-home-avatar-btn ${selectedPlayerId === meId ? 'selected' : ''}`}
+                      aria-label={me?.name ?? 'Du'}
+                      title={me?.name ?? 'Du'}
+                      onClick={() => setSelectedPlayerId((cur) => (cur === meId ? null : meId))}
+                      style={{ ['--pclr']: playerColor(me?.color ?? 'blue') } as CSSProperties & { ['--pclr']: string }}
+                    >
+                      {me?.avatarUrl ? (
+                        <img className="star-corner-avatar" src={me.avatarUrl} alt="" draggable={false} style={{ background: playerColor(me?.color ?? 'blue') }} />
+                      ) : (
+                        <div className="star-corner-dot" style={{ background: playerColor(me?.color ?? 'blue') }} />
+                      )}
+                    </button>
+                    {state.players[state.currentPlayerIndex]?.id === meId ? <div className="star-corner-turn-under">{t.turnNow}</div> : null}
+                  </div>
+                  <div className="star-corner-info">
+                    <div className="star-corner-name">{me?.name ?? 'Du'}</div>
+                    <div className="star-corner-stats">{t.pts}: {me?.score ?? 0} · {t.res}: {sumResources(me?.resources ?? { metal: 0, gas: 0, crystal: 0, food: 0, data: 0 })}</div>
+                  </div>
+                </div>
+              </div>
             </div>
-          ))}
-        </div>
-        <div className="star-actions">
-          <div className="star-zoom">
-            <span className="star-zoom-label" aria-label="Zoom">
-              <span className="material-symbols-rounded" aria-hidden="true">zoom_in</span>
-            </span>
-            <input
-              className="star-zoom-slider"
-              type="range"
-              min={0}
-              max={2}
-              step={1}
-              value={zoomLevel}
-              onChange={(e) => setZoomLevel(Number(e.target.value) as 0 | 1 | 2)}
-            />
           </div>
-          <button type="button" className={`star-btn icon-only ${canRollNow ? 'star-pulse' : ''}`} aria-label="Würfeln" onClick={rollDice} disabled={!canRollNow}>
-            <span className="material-symbols-rounded" aria-hidden="true">casino</span>
-          </button>
-          <div className="star-action-group">
+        </div>
+        <div className="star-float-bottom-right" aria-hidden="true" />
+      </div>
+      <div
+        className={`star-action-dock ${isMyTurn && state.status !== 'lobby' && state.status !== 'finished' ? 'on-turn' : ''}`}
+        aria-label="Aktionen"
+        style={
+          {
+            ['--pclr']: playerColor(me?.color ?? 'blue'),
+            top: actionDockTopPx ? `${actionDockTopPx}px` : '50%',
+          } as CSSProperties & { ['--pclr']: string }
+        }
+      >
+        <div ref={actionDockGroupRef} className={`star-action-dock-group ${actionDockTwoCol ? 'two-col' : ''}`}>
+          <div className="star-action-col secondary" aria-label="Weitere">
+            <button type="button" className={`star-btn icon-only star-action-dock-btn ${openMenu === 'chat' ? 'active' : ''}`} aria-label={t.chat} title={t.chat} onClick={() => setOpenMenu((m) => (m === 'chat' ? null : 'chat'))}>
+              <span className="material-symbols-rounded" aria-hidden="true">chat</span>
+            </button>
+            <button type="button" className={`star-btn icon-only star-action-dock-btn ${openMenu === 'recipes' ? 'active' : ''}`} aria-label={t.recipes} title={t.recipes} onClick={() => setOpenMenu((m) => (m === 'recipes' ? null : 'recipes'))}>
+              <span className="material-symbols-rounded" aria-hidden="true">menu_book</span>
+            </button>
+            <button type="button" className="star-btn icon-only star-action-dock-btn" aria-label={t.endTurn} title={t.endTurn} onClick={endTurn} disabled={!isMyTurn || state.status !== 'playing' || state.phase === 'wormhole'}>
+              <span className="material-symbols-rounded" aria-hidden="true">autorenew</span>
+            </button>
+          </div>
+
+          <div className="star-action-col primary" aria-label="Aktionen">
+            {!isSetup ? (
+              <button
+                type="button"
+                className={`star-action-dice-btn ${canRollNow ? 'needs-roll' : ''}`}
+                aria-label="Würfeln"
+                title="Würfeln"
+                onClick={rollDice}
+                disabled={!canRollNow}
+              >
+                <div className="star-dice-row star-action-dice-stack" aria-hidden="true">
+                  <DiceCube value={d1} rolling={isRolling} />
+                  <DiceCube value={d2} rolling={isRolling} />
+                </div>
+              </button>
+            ) : null}
+
             <button
               type="button"
-              className={`star-btn icon-only ${openMenu === 'build' ? 'active' : ''} ${canBuildAnyNow && state.phase === 'main' ? 'star-pulse' : ''}`}
+              className={`star-btn icon-only star-action-dock-btn ${openMenu === 'build' ? 'active' : ''} ${isMyTurn && canBuildAnyNow ? 'inverted' : ''} ${isMyTurn && canBuildAnyNow ? 'star-pulse' : ''}`}
               onClick={() => {
                 setMode('none')
                 setPendingVertex(null)
@@ -3014,54 +3983,41 @@ function GameInner() {
                 setOpenMenu((m) => (m === 'build' ? null : 'build'))
               }}
               disabled={!isMyTurn || state.phase !== 'main'}
-              aria-label={t.build} title={t.build}
+              aria-label={t.build}
+              title={t.build}
             >
-              <span className="material-symbols-rounded" aria-hidden="true">build</span>
+              <span className="material-symbols-rounded" aria-hidden="true">hardware</span>
             </button>
+
+            {!isSetup ? (
+              <button
+                type="button"
+                className={`star-btn icon-only star-action-dock-btn ${openMenu === 'market' ? 'active' : ''} ${isMyTurn && state.status === 'playing' && state.phase === 'main' && sumResources(me?.resources ?? { metal: 0, gas: 0, crystal: 0, food: 0, data: 0 }) > 0 ? 'inverted star-pulse' : ''}`}
+                onClick={() => {
+                  setMode('none')
+                  setPendingVertex(null)
+                  setPendingWarpFrom(null)
+                  setOpenMenu((m) => {
+                    const next = m === 'market' ? null : 'market'
+                    if (next === 'market') {
+                      setMarketTab('players')
+                    }
+                    return next
+                  })
+                }}
+                disabled={!isMyTurn || state.status !== 'playing' || state.phase !== 'main'}
+                aria-label={t.market}
+                title={t.market}
+              >
+                <span className="material-symbols-rounded" aria-hidden="true">handshake</span>
+              </button>
+            ) : null}
           </div>
-          <div className="star-action-group">
-            <button
-              type="button"
-              className={`star-btn icon-only ${openMenu === 'market' ? 'active' : ''} ${canMarket ? 'star-pulse' : ''}`}
-              onClick={() => {
-                setMode('none')
-                setPendingVertex(null)
-                setPendingWarpFrom(null)
-                setOpenMenu((m) => (m === 'market' ? null : 'market'))
-              }}
-              disabled={!isMyTurn || state.status !== 'playing' || state.phase !== 'main'}
-              aria-label={t.market} title={t.market}
-            >
-              <span className="material-symbols-rounded" aria-hidden="true">handshake</span>
-            </button>
-          </div>
-          <button type="button" className={`star-btn icon-only ${openMenu === 'log' ? 'active' : ''}`} aria-label={t.log} title={t.log} onClick={() => setOpenMenu((m) => (m === 'log' ? null : 'log'))}>
-            <span className="material-symbols-rounded" aria-hidden="true">list_alt</span>
-          </button>
-          <button type="button" className={`star-btn icon-only ${openMenu === 'chat' ? 'active' : ''}`} aria-label={t.chat} title={t.chat} onClick={() => setOpenMenu((m) => (m === 'chat' ? null : 'chat'))}>
-            <span className="material-symbols-rounded" aria-hidden="true">chat</span>
-          </button>
-          <button
-            type="button"
-            className="star-btn icon-only"
-            aria-label={isMuted ? t.soundOn : t.soundOff}
-            title={isMuted ? t.soundOn : t.soundOff}
-            onClick={() => setIsMuted((v) => !v)}
-          >
-            {isMuted ? (
-              <span className="material-symbols-rounded" aria-hidden="true">volume_off</span>
-            ) : (
-              <span className="material-symbols-rounded" aria-hidden="true">volume_up</span>
-            )}
-          </button>
-          <button type="button" className="star-btn icon-only" aria-label={t.endTurn} title={t.endTurn} onClick={endTurn} disabled={!isMyTurn || state.status !== 'playing' || state.phase === 'wormhole'}>
-            <span className="material-symbols-rounded" aria-hidden="true">autorenew</span>
-          </button>
         </div>
       </div>
-      <div className="star-corner-grid-fixed" style={{ top: topbarH + 10, bottom: bottombarH + 10 }}>
+      <div className="star-corner-grid-fixed" style={{ top: topUiInset + 10, bottom: 10 }}>
         {corners.map((p, idx) => {
-          if (!p) return <div key={idx} className={`star-corner ${['lt', 'rt', 'lb', 'rb'][idx]}`} />
+          if (!p) return null
           const isCurrent = p.id === state.players[state.currentPlayerIndex]?.id
           const clr = playerColor(p.color)
           const style = {
@@ -3075,23 +4031,25 @@ function GameInner() {
               if (!p) return
               cornerRefByPlayerId.current[p.id] = el
             }}
-            className={`star-corner ${['lt', 'rt', 'lb', 'rb'][idx]} ${isCurrent ? 'active' : ''}`}
+            className={`star-corner ${cornerSlots[idx]} ${isCurrent ? 'active' : ''}`}
             style={style}
           >
             {p ? (
               <>
                 <div className="star-corner-head">
-                  {p.isBot ? (
-                    <img src="/avatars/bot.jpg" alt={p.name} className="star-corner-avatar" style={{ background: playerColor(p.color) }} />
-                  ) : p.avatarUrl ? (
-                    <img src={p.avatarUrl} alt={p.name} className="star-corner-avatar" style={{ background: playerColor(p.color) }} />
-                  ) : (
-                    <div className="star-corner-dot" style={{ background: playerColor(p.color) }} />
-                  )}
+                  <div className="star-corner-avatar-col">
+                    {p.isBot ? (
+                      <img src="/avatars/bot.jpg" alt={p.name} className="star-corner-avatar" style={{ background: playerColor(p.color) }} />
+                    ) : p.avatarUrl ? (
+                      <img src={p.avatarUrl} alt={p.name} className="star-corner-avatar" style={{ background: playerColor(p.color) }} />
+                    ) : (
+                      <div className="star-corner-dot" style={{ background: playerColor(p.color) }} />
+                    )}
+                    {isCurrent ? <div className="star-corner-turn-under">{t.turnNow}</div> : null}
+                  </div>
                   <div className="star-corner-info">
                     <div className="star-corner-name">{p.name}{p.isBot ? ' (Bot)' : ''}</div>
-                    <div className="star-corner-meta">{t.pts}: {p.score}</div>
-                    <div className="star-corner-meta">{t.res}: {sumResources(p.resources)}</div>
+                    <div className="star-corner-stats">{t.pts}: {p.score} · {t.res}: {sumResources(p.resources)}</div>
                   </div>
                 </div>
               </>
@@ -3126,7 +4084,7 @@ function GameInner() {
 export function GamePage() {
   const { gameId } = useParams()
   const { user } = useAuth()
-  if (!gameId || !user) return null
+  if (!gameId || !user) return <div className="page"><div className="loading">Lädt…</div></div>
   return (
     <GameStateProvider gameId={gameId} playerId={user.id} playerName={user.name} avatarUrl={user.avatarUrl ?? ''}>
       <GameInner />

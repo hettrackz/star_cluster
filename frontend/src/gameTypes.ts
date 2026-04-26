@@ -14,6 +14,7 @@ export interface Player {
   color: PlayerColor
   avatarUrl?: string | undefined
   isBot: boolean
+  isReady: boolean
   score: number
   resources: Record<Resource, number>
 }
@@ -138,6 +139,7 @@ export interface GameState {
   blackHoleTileId: TileId
   blackHolePool: Record<Resource, number>
   tradeOffers: TradeOffer[]
+  tradeOffersThisRound: Record<string, number>
   lastDiceRoll: DiceRoll | null
   winnerPlayerId: string | null
   chatMessages: ChatMessage[]

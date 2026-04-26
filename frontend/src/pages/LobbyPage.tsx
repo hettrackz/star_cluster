@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../AuthContext'
 import { useI18n } from '../I18nContext'
 import { Icon } from '../components/Icon'
@@ -15,10 +15,9 @@ export function LobbyPage() {
   const [gameIdInput, setGameIdInput] = useState('')
   const [playerName, setPlayerName] = useState('')
   const [selectedAvatar, setSelectedAvatar] = useState<string | null>(null)
-  const [botCount, setBotCount] = useState(3)
   const [radius, setRadius] = useState(3)
-  const [maxRounds, setMaxRounds] = useState(15)
-  const [turnLimitSec, setTurnLimitSec] = useState(45)
+  const [maxRounds, setMaxRounds] = useState(30)
+  const [turnLimitSec, setTurnLimitSec] = useState(300)
   const [occupiedAvatars, setOccupiedAvatars] = useState<string[]>([])
   const [friendEmail, setFriendEmail] = useState('')
   const [friends, setFriends] = useState<Array<{ id: string; email: string; name: string; avatarUrl: string | null }>>([])
@@ -31,9 +30,24 @@ export function LobbyPage() {
   >([])
   const [lobbyError, setLobbyError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [showSetupStep, setShowSetupStep] = useState(false)
+  const [showJoin, setShowJoin] = useState(false)
+  const [showAddFriend, setShowAddFriend] = useState(false)
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false)
   const navigate = useNavigate()
+  const location = useLocation()
+  const handledNavErrorRef = useRef(false)
   const { backendUrl, token, user, logout, updateProfile } = useAuth()
   const { t, lang, setLang } = useI18n()
+
+  useEffect(() => {
+    if (handledNavErrorRef.current) return
+    const err = (location.state as { error?: unknown } | null)?.error
+    if (typeof err !== 'string' || !err) return
+    handledNavErrorRef.current = true
+    setLobbyError(err)
+    navigate('/lobby', { replace: true, state: null })
+  }, [location.state, navigate])
 
   useEffect(() => {
     if (!user) return
@@ -134,7 +148,7 @@ export function LobbyPage() {
 
   const handleCreateGame = async () => {
     const name = playerName || 'Spieler'
-    const avatar = selectedAvatar || AVATARS[0]!.url
+    const avatar = selectedAvatar || user?.avatarUrl || AVATARS[0]!.url
 
     try {
       setLobbyError(null)
@@ -149,7 +163,6 @@ export function LobbyPage() {
         body: JSON.stringify({
           creatorName: name,
           avatarUrl: avatar,
-          botCount,
           radius,
           maxRounds,
           turnLimitSec,
@@ -162,7 +175,7 @@ export function LobbyPage() {
       }
 
       const data: { gameId: string } = await response.json()
-      navigate(`/game/${data.gameId}`)
+      navigate(`/waiting/${data.gameId}`)
     } catch (err) {
       setLobbyError(err instanceof Error ? err.message : 'Netzwerkfehler')
     } finally {
@@ -177,7 +190,7 @@ export function LobbyPage() {
       return
     }
     const name = playerName || 'Spieler'
-    const avatar = selectedAvatar || AVATARS.find(a => !occupiedAvatars.includes(a.url))?.url || AVATARS[0]!.url
+    const avatar = selectedAvatar || user?.avatarUrl || AVATARS.find((a) => !occupiedAvatars.includes(a.url))?.url || AVATARS[0]!.url
 
     try {
       setLobbyError(null)
@@ -192,13 +205,17 @@ export function LobbyPage() {
         setLobbyError(t('lobby.err.joinFailed'))
         return
       }
-      navigate(`/game/${id}`)
+      navigate(`/waiting/${id}`)
     } catch (err) {
       setLobbyError(err instanceof Error ? err.message : 'Netzwerkfehler')
     } finally {
       setIsBusy(false)
     }
   }
+
+  const effectiveAvatarUrl =
+    selectedAvatar || user?.avatarUrl || AVATARS.find((a) => !occupiedAvatars.includes(a.url))?.url || AVATARS[0]!.url
+  const friendGamesPreview = friendGames.slice(0, 3)
 
   return (
     <div className="page lobby-page">
@@ -227,140 +244,197 @@ export function LobbyPage() {
         </div>
       </div>
       {lobbyError && <div className="error-banner">{lobbyError}</div>}
-      <div className="card">
-        <label>
-          {t('lobby.displayName')}
-          <input
-            type="text"
-            value={playerName}
-            onChange={(e) => setPlayerName(e.target.value)}
-            placeholder="Name eingeben"
-          />
-        </label>
-      </div>
-
-      <div className="card">
-        <h3>{t('lobby.chooseAvatar')}</h3>
-        <div className="avatar-selection">
-          {AVATARS.map((avatar) => {
-            const isOccupied = occupiedAvatars.includes(avatar.url)
-            const displayName = lang === 'en' ? avatar.nameEn : avatar.nameDe
-            return (
-              <div 
-                key={avatar.id}
-                className={`avatar-option ${selectedAvatar === avatar.url ? 'selected' : ''} ${isOccupied ? 'occupied' : ''}`}
-                onClick={() => !isOccupied && setSelectedAvatar(avatar.url)}
+      <div className="card lobby-card">
+        {!showSetupStep ? (
+          <>
+            <div className="lobby-profile-row">
+              <label className="lobby-profile-name">
+                <span className="lobby-label">{t('lobby.displayName')}</span>
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="Name eingeben"
+                />
+              </label>
+              <button
+                type="button"
+                className={`lobby-avatar-btn ${showAvatarPicker ? 'active' : ''}`}
+                onClick={() => setShowAvatarPicker((v) => !v)}
+                aria-label={t('lobby.chooseAvatar')}
               >
-                <img src={avatar.url} alt={displayName} />
-                <span className="avatar-name">{displayName}</span>
-                {isOccupied && <span className="occupied-label">{lang === 'en' ? 'Taken' : 'Besetzt'}</span>}
+                <img className="lobby-avatar-img" src={effectiveAvatarUrl} alt="" />
+                <span className="lobby-avatar-text">{t('lobby.chooseAvatar')}</span>
+              </button>
+            </div>
+
+            {showAvatarPicker ? (
+              <div className="lobby-avatar-grid" role="group" aria-label={t('lobby.chooseAvatar')}>
+                {AVATARS.map((avatar) => {
+                  const isOccupied = occupiedAvatars.includes(avatar.url)
+                  const displayName = lang === 'en' ? avatar.nameEn : avatar.nameDe
+                  return (
+                    <button
+                      key={avatar.id}
+                      type="button"
+                      className={`lobby-avatar-option ${selectedAvatar === avatar.url ? 'selected' : ''} ${isOccupied ? 'occupied' : ''}`}
+                      onClick={() => {
+                        if (isOccupied) return
+                        setSelectedAvatar(avatar.url)
+                        setShowAvatarPicker(false)
+                      }}
+                      disabled={isOccupied}
+                      aria-label={displayName}
+                    >
+                      <img src={avatar.url} alt={displayName} />
+                    </button>
+                  )
+                })}
               </div>
-            )
-          })}
-        </div>
-      </div>
+            ) : null}
 
-      <div className="card">
-        <button onClick={handleCreateGame} disabled={!selectedAvatar || isBusy}>{t('lobby.create')}</button>
-      </div>
-      <div className="card">
-        <h3>Spiel-Setup</h3>
-        <div className="form-row">
-          <label>
-            Bots (0-3)
-            <input type="number" min={0} max={3} value={botCount} onChange={(e) => setBotCount(Number(e.target.value))} />
-          </label>
-          <label>
-            Radius (2-6)
-            <input type="number" min={2} max={6} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
-          </label>
-          <label>
-            Runden (5-50)
-            <input type="number" min={5} max={50} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} />
-          </label>
-          <label>
-            {lang === 'en' ? 'Round time (sec)' : 'Rundenzeit (Sek.)'}
-            <input
-              type="number"
-              min={15}
-              max={600}
-              step={5}
-              value={turnLimitSec}
-              onChange={(e) => setTurnLimitSec(Number(e.target.value))}
-            />
-          </label>
-        </div>
-      </div>
-      <div className="card">
-        <label>
-          {t('lobby.gameId')}
-          <input
-            type="text"
-            value={gameIdInput}
-            onChange={(e) => setGameIdInput(e.target.value)}
-            placeholder="z.B. ABC123"
-          />
-        </label>
-        <button onClick={handleJoinGame} disabled={isBusy}>
-          {t('lobby.join')}
-        </button>
-      </div>
+            <div className="lobby-section-title">{lang === 'en' ? 'Game Overview' : 'Game Overview'}</div>
+            <div className="lobby-overview">
+              <div className="lobby-overview-meta">
+                <div className="subtle-text">{lang === 'en' ? `Friends: ${friends.length}` : `Freunde: ${friends.length}`}</div>
+                <button type="button" className="lobby-mini-btn" onClick={() => refreshFriendGames()} disabled={isBusy}>
+                  {lang === 'en' ? 'Refresh' : 'Aktualisieren'}
+                </button>
+              </div>
 
-      <div className="card">
-        <h3>{lang === 'en' ? 'Friends' : 'Freunde'}</h3>
-        <div className="input-group">
-          <input
-            type="text"
-            value={friendEmail}
-            onChange={(e) => setFriendEmail(e.target.value)}
-            placeholder={lang === 'en' ? 'Friend email' : 'Email des Freundes'}
-          />
-          <button type="button" onClick={handleAddFriend} disabled={isBusy || !friendEmail.trim()}>
-            {lang === 'en' ? 'Add' : 'Hinzufügen'}
-          </button>
-        </div>
-
-        {friends.length > 0 && (
-          <div style={{ marginTop: '0.75rem' }}>
-            <div className="info-label">{lang === 'en' ? 'Your friends' : 'Deine Freunde'}</div>
-            <ul className="player-lobby-list">
-              {friends.map((f) => (
-                <li key={f.id}>
-                  {f.name} <span style={{ opacity: 0.7 }}>({f.email})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div style={{ marginTop: '0.75rem' }}>
-          <div className="info-label">{lang === 'en' ? 'Open games from friends' : 'Offene Spiele von Freunden'}</div>
-          {friendGames.length === 0 ? (
-            <div className="subtle-text">{lang === 'en' ? 'No open friend games.' : 'Keine offenen Freundes-Spiele.'}</div>
-          ) : (
-            <ul className="player-lobby-list">
-              {friendGames.map((g) => (
-                <li key={g.gameId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-                  <div>
-                    <div style={{ fontWeight: 900 }}>{g.friend.name}</div>
-                    <div style={{ opacity: 0.7, fontSize: '0.9rem' }}>
-                      {lang === 'en' ? 'Players' : 'Spieler'}: {g.players.length} • ID: {g.gameId}
+              {friendGamesPreview.length === 0 ? (
+                <div className="subtle-text">{lang === 'en' ? 'No open friend games.' : 'Keine offenen Freundes-Spiele.'}</div>
+              ) : (
+                <div className="lobby-overview-list">
+                  {friendGamesPreview.map((g) => (
+                    <div key={g.gameId} className="lobby-overview-item">
+                      <div className="lobby-overview-item-left">
+                        <div className="lobby-overview-title">{g.friend.name}</div>
+                        <div className="lobby-overview-sub">
+                          {lang === 'en' ? 'Players' : 'Spieler'}: {g.players.length} • ID: {g.gameId}
+                        </div>
+                      </div>
+                      <button type="button" className="lobby-mini-btn" onClick={() => navigate(`/waiting/${g.gameId}`)} disabled={isBusy}>
+                        {lang === 'en' ? 'Join' : 'Beitreten'}
+                      </button>
                     </div>
-                  </div>
-                  <button type="button" onClick={() => navigate(`/game/${g.gameId}`)} disabled={isBusy}>
-                    {lang === 'en' ? 'Join' : 'Beitreten'}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+                  ))}
+                  {friendGames.length > friendGamesPreview.length ? (
+                    <div className="subtle-text">
+                      {lang === 'en'
+                        ? `+${friendGames.length - friendGamesPreview.length} more…`
+                        : `+${friendGames.length - friendGamesPreview.length} weitere…`}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
 
-        <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={() => refreshFriendGames()} disabled={isBusy}>
-            {lang === 'en' ? 'Refresh' : 'Aktualisieren'}
-          </button>
-        </div>
+            <div className="lobby-actions-row">
+              <button
+                type="button"
+                onClick={() => {
+                  setLobbyError(null)
+                  setShowSetupStep(true)
+                  setShowJoin(false)
+                  setShowAddFriend(false)
+                }}
+                disabled={isBusy}
+              >
+                {t('lobby.create')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLobbyError(null)
+                  setShowJoin((v) => !v)
+                  setShowAddFriend(false)
+                }}
+                disabled={isBusy}
+              >
+                {t('lobby.join')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLobbyError(null)
+                  setShowAddFriend((v) => !v)
+                  setShowJoin(false)
+                }}
+                disabled={isBusy}
+              >
+                {lang === 'en' ? 'Add friends' : 'Add Friends'}
+              </button>
+            </div>
+
+            {showJoin ? (
+              <div className="lobby-inline-row" aria-label={t('lobby.join')}>
+                <input
+                  type="text"
+                  value={gameIdInput}
+                  onChange={(e) => setGameIdInput(e.target.value)}
+                  placeholder="Game ID (z.B. ABC123)"
+                />
+                <button type="button" onClick={handleJoinGame} disabled={isBusy}>
+                  {lang === 'en' ? 'Go' : 'Los'}
+                </button>
+              </div>
+            ) : null}
+
+            {showAddFriend ? (
+              <div className="lobby-inline-row" aria-label={lang === 'en' ? 'Add friends' : 'Add Friends'}>
+                <input
+                  type="text"
+                  value={friendEmail}
+                  onChange={(e) => setFriendEmail(e.target.value)}
+                  placeholder={lang === 'en' ? 'Friend email' : 'Email des Freundes'}
+                />
+                <button type="button" onClick={handleAddFriend} disabled={isBusy || !friendEmail.trim()}>
+                  {lang === 'en' ? 'Add' : 'Hinzufügen'}
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className="lobby-section-title">{lang === 'en' ? 'Game Setup' : 'Spiel-Setup'}</div>
+            <div className="lobby-setup-grid" aria-label={lang === 'en' ? 'Game Setup' : 'Spiel-Setup'}>
+              <label>
+                Radius
+                <input type="number" min={2} max={6} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
+              </label>
+              <label>
+                {lang === 'en' ? 'Rounds' : 'Runden'}
+                <input type="number" min={5} max={50} value={maxRounds} onChange={(e) => setMaxRounds(Number(e.target.value))} />
+              </label>
+              <label>
+                {lang === 'en' ? 'Round time (sec)' : 'Rundenzeit (Sek.)'}
+                <input
+                  type="number"
+                  min={15}
+                  max={600}
+                  step={5}
+                  value={turnLimitSec}
+                  onChange={(e) => setTurnLimitSec(Number(e.target.value))}
+                />
+              </label>
+            </div>
+            <div className="lobby-actions-row">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSetupStep(false)
+                }}
+                disabled={isBusy}
+              >
+                {lang === 'en' ? 'Back' : 'Zurück'}
+              </button>
+              <button type="button" onClick={handleCreateGame} disabled={isBusy}>
+                {lang === 'en' ? 'Create Game' : 'Spiel erstellen'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

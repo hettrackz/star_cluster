@@ -3,7 +3,7 @@ import type { GameState } from '../gameTypes'
 import { useGameState } from '../GameStateContext'
 import { useAuth } from '../AuthContext'
 
-export function Chat({ state }: { state: GameState }) {
+export function Chat({ state, embedded }: { state: GameState; embedded?: boolean }) {
   const { sendChatMessage } = useGameState()
   const { user } = useAuth()
   const messages = state.chatMessages
@@ -42,10 +42,12 @@ export function Chat({ state }: { state: GameState }) {
   }
 
   return (
-    <div className="chat-container card">
-      <div className="chat-header">
-        <h3>Spiel-Chat</h3>
-      </div>
+    <div className={`chat-container ${embedded ? 'embedded' : 'card'}`}>
+      {embedded ? null : (
+        <div className="chat-header">
+          <h3>Spiel-Chat</h3>
+        </div>
+      )}
       <div className="chat-messages">
         {messages.length === 0 ? (
           <p className="no-messages">Noch keine Nachrichten...</p>

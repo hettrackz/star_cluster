@@ -147,7 +147,9 @@ export function registerAuthRoutes(router: Router) {
       try {
         const dbPath =
           process.env.AUTH_DB_PATH ??
-          path.resolve(process.cwd(), path.join("backend", "data", "auth.json"));
+          (path.basename(process.cwd()) === "backend"
+            ? path.resolve(process.cwd(), path.join("data", "auth.json"))
+            : path.resolve(process.cwd(), path.join("backend", "data", "auth.json")));
         const raw = await readFile(dbPath, "utf8");
         const data = JSON.parse(raw) as { users?: Array<{ id: string; email: string; name: string; emailVerifiedAt?: number }> };
         const users = (data.users ?? []).map((u) => ({
